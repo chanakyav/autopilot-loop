@@ -354,3 +354,23 @@ class TestReadKey:
         finally:
             os.close(r)
             os.close(w)
+
+    def test_ctrl_d_returns_pagedown(self):
+        r, w = os.pipe()
+        try:
+            os.write(w, b"\x04")
+            result = _read_key(r, timeout=0.1)
+            assert result == "pagedown"
+        finally:
+            os.close(r)
+            os.close(w)
+
+    def test_ctrl_u_returns_pageup(self):
+        r, w = os.pipe()
+        try:
+            os.write(w, b"\x15")
+            result = _read_key(r, timeout=0.1)
+            assert result == "pageup"
+        finally:
+            os.close(r)
+            os.close(w)
