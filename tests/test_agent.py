@@ -1,5 +1,6 @@
 """Tests for the copilot agent runner."""
 
+import io
 import os
 import signal
 import subprocess
@@ -15,20 +16,32 @@ def session_dir(tmp_path):
     return str(tmp_path)
 
 
+def _make_pipe(data):
+    """Create a file-like bytes pipe from a string."""
+    return io.BytesIO(data)
+
+
+def _mock_proc(stdout=b"", stderr=b"", returncode=0, pid=12345):
+    """Create a mock Popen process with pipe-like stdout/stderr."""
+    proc = MagicMock()
+    proc.stdout = _make_pipe(stdout)
+    proc.stderr = _make_pipe(stderr)
+    proc.returncode = returncode
+    proc.pid = pid
+    proc.wait.return_value = returncode
+    return proc
+
+
 class TestRunAgent:
     def test_success(self, session_dir):
-        mock_proc = MagicMock()
-        mock_proc.communicate.return_value = (b"output text", b"")
-        mock_proc.returncode = 0
-        mock_proc.pid = 12345
+        mock_proc = _mock_proc(stdout=b"output text\n")
 
         with patch("autopilot_loop.agent.subprocess.Popen", return_value=mock_proc) as mock_popen:
             result = run_agent("test prompt", session_dir, model="test-model", timeout=60)
 
         assert result.success
         assert result.exit_code == 0
-        assert result.stdout == "output text"
-        assert result.stderr == ""
+        assert "output text" in result.stdout
         assert result.duration > 0
 
         # Verify command construction
@@ -45,26 +58,21 @@ class TestRunAgent:
         assert "--share" in cmd
 
     def test_failure_exit_code(self, session_dir):
-        mock_proc = MagicMock()
-        mock_proc.communicate.return_value = (b"", b"error occurred")
-        mock_proc.returncode = 1
-        mock_proc.pid = 12345
+        mock_proc = _mock_proc(stderr=b"error occurred\n", returncode=1)
 
         with patch("autopilot_loop.agent.subprocess.Popen", return_value=mock_proc):
             result = run_agent("test prompt", session_dir)
 
         assert not result.success
         assert result.exit_code == 1
-        assert result.stderr == "error occurred"
+        assert "error occurred" in result.stderr
 
     def test_timeout_sends_sigterm(self, session_dir):
-        mock_proc = MagicMock()
-        mock_proc.pid = 12345
-        mock_proc.communicate.side_effect = [
+        mock_proc = _mock_proc(returncode=-15)
+        mock_proc.wait.side_effect = [
             subprocess.TimeoutExpired(cmd="copilot", timeout=5),
-            (b"output after term", b""),
+            -15,
         ]
-        mock_proc.returncode = -15
 
         with patch("autopilot_loop.agent.subprocess.Popen", return_value=mock_proc):
             with patch("autopilot_loop.agent.os.killpg") as mock_killpg:
@@ -82,10 +90,7 @@ class TestRunAgent:
         assert "not found" in result.stderr
 
     def test_extra_flags_passed(self, session_dir):
-        mock_proc = MagicMock()
-        mock_proc.communicate.return_value = (b"", b"")
-        mock_proc.returncode = 0
-        mock_proc.pid = 12345
+        mock_proc = _mock_proc()
 
         with patch("autopilot_loop.agent.subprocess.Popen", return_value=mock_proc) as mock_popen:
             run_agent("prompt", session_dir, extra_flags=["--add-dir", "/tmp/extra"])
@@ -95,10 +100,7 @@ class TestRunAgent:
         assert "/tmp/extra" in cmd
 
     def test_session_file_path(self, session_dir):
-        mock_proc = MagicMock()
-        mock_proc.communicate.return_value = (b"", b"")
-        mock_proc.returncode = 0
-        mock_proc.pid = 12345
+        mock_proc = _mock_proc()
 
         with patch("autopilot_loop.agent.subprocess.Popen", return_value=mock_proc):
             result = run_agent("prompt", session_dir)

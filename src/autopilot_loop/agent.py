@@ -1,13 +1,16 @@
 """Wrapper around `copilot -p` subprocess calls.
 
-Spawns copilot CLI in non-interactive mode, captures output,
-handles timeout with SIGTERM/SIGKILL.
+Spawns copilot CLI in non-interactive mode, streams stdout in real-time
+(visible when attached to tmux), handles timeout with SIGTERM/SIGKILL.
 """
 
+import io
 import logging
 import os
 import signal
 import subprocess
+import sys
+import threading
 import time
 
 logger = logging.getLogger(__name__)
@@ -32,8 +35,24 @@ class AgentResult:
         return self.exit_code == 0
 
 
+def _stream_and_capture(pipe, echo_to, captured):
+    """Read from pipe line-by-line, echo to a stream, and capture all output."""
+    try:
+        for line in iter(pipe.readline, b""):
+            decoded = line.decode("utf-8", errors="replace")
+            captured.write(decoded)
+            if echo_to:
+                echo_to.write(decoded)
+                echo_to.flush()
+    finally:
+        pipe.close()
+
+
 def run_agent(prompt, session_dir, model="claude-opus-4.6", timeout=1800, extra_flags=None):
     """Run copilot CLI in non-interactive mode.
+
+    Streams stdout to the terminal in real-time so you can see progress
+    when attached to the tmux session. Also captures full output for logging.
 
     Args:
         prompt: The prompt text for copilot -p.
@@ -83,21 +102,42 @@ def run_agent(prompt, session_dir, model="claude-opus-4.6", timeout=1800, extra_
             duration=0.0,
         )
 
+    # Stream stdout to terminal in real-time while capturing it
+    stdout_captured = io.StringIO()
+    stderr_captured = io.StringIO()
+
+    stdout_thread = threading.Thread(
+        target=_stream_and_capture,
+        args=(proc.stdout, sys.stdout, stdout_captured),
+        daemon=True,
+    )
+    stderr_thread = threading.Thread(
+        target=_stream_and_capture,
+        args=(proc.stderr, None, stderr_captured),
+        daemon=True,
+    )
+    stdout_thread.start()
+    stderr_thread.start()
+
     try:
-        stdout_bytes, stderr_bytes = proc.communicate(timeout=timeout)
+        proc.wait(timeout=timeout)
     except subprocess.TimeoutExpired:
         logger.warning("Agent timed out after %ds, sending SIGTERM", timeout)
         os.killpg(os.getpgid(proc.pid), signal.SIGTERM)
         try:
-            stdout_bytes, stderr_bytes = proc.communicate(timeout=30)
+            proc.wait(timeout=30)
         except subprocess.TimeoutExpired:
             logger.warning("Agent still running after SIGTERM grace period, sending SIGKILL")
             os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
-            stdout_bytes, stderr_bytes = proc.communicate()
+            proc.wait()
+
+    # Wait for streaming threads to finish reading
+    stdout_thread.join(timeout=5)
+    stderr_thread.join(timeout=5)
 
     duration = time.time() - start_time
-    stdout = stdout_bytes.decode("utf-8", errors="replace")
-    stderr = stderr_bytes.decode("utf-8", errors="replace")
+    stdout = stdout_captured.getvalue()
+    stderr = stderr_captured.getvalue()
 
     logger.info(
         "Agent finished: exit_code=%d, duration=%.1fs, session=%s",
