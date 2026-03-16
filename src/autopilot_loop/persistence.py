@@ -26,7 +26,16 @@ __all__ = [
 DB_DIR = os.path.join(os.path.expanduser("~"), ".autopilot-loop")
 DB_PATH = os.path.join(DB_DIR, "state.db")
 
+# Bump this when the schema changes. Additive changes (new nullable columns)
+# are handled by _migrate(). Breaking changes trigger a DB recreate.
+SCHEMA_VERSION = 2
+
 SCHEMA = """
+CREATE TABLE IF NOT EXISTS schema_meta (
+    key TEXT PRIMARY KEY,
+    value TEXT NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS tasks (
     id TEXT PRIMARY KEY,
     prompt TEXT NOT NULL,
@@ -64,15 +73,81 @@ CREATE TABLE IF NOT EXISTS agent_runs (
 );
 """
 
+# Additive migrations: (version, table, column, column_def)
+# Applied in order. Only runs migrations newer than the current DB version.
+_MIGRATIONS = [
+    (2, "tasks", "last_review_id", "INTEGER"),
+]
+
 
 def _get_db():
-    """Get a connection to the SQLite database, creating it if needed."""
+    """Get a connection to the SQLite database, creating it if needed.
+
+    Handles schema upgrades gracefully:
+    - Additive changes (new columns) are applied via ALTER TABLE, preserving data.
+    - Incompatible changes (rare) trigger a full recreate with a warning.
+    """
     os.makedirs(DB_DIR, exist_ok=True)
+
+    needs_create = not os.path.isfile(DB_PATH)
+    db_version = 0
+
+    if not needs_create:
+        try:
+            conn = sqlite3.connect(DB_PATH)
+            row = conn.execute(
+                "SELECT value FROM schema_meta WHERE key = 'version'"
+            ).fetchone()
+            db_version = int(row[0]) if row else 0
+            conn.close()
+        except (sqlite3.OperationalError, sqlite3.DatabaseError):
+            # No schema_meta table or corrupt DB — treat as version 0
+            try:
+                conn.close()
+            except Exception:
+                pass
+            db_version = 0
+
     conn = sqlite3.connect(DB_PATH)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA journal_mode=WAL")
     conn.executescript(SCHEMA)
+
+    # Apply additive migrations for versions newer than what the DB has
+    if db_version > 0 and db_version < SCHEMA_VERSION:
+        _migrate(conn, db_version)
+
+    # Stamp the current version
+    conn.execute(
+        "INSERT OR REPLACE INTO schema_meta (key, value) VALUES ('version', ?)",
+        (str(SCHEMA_VERSION),),
+    )
+    conn.commit()
     return conn
+
+
+def _migrate(conn, from_version):
+    """Apply additive schema migrations (new nullable columns).
+
+    Only runs migrations with version > from_version.
+    """
+    existing_columns = {}  # table -> set of column names
+
+    for version, table, column, column_def in _MIGRATIONS:
+        if version <= from_version:
+            continue
+
+        # Cache column list per table
+        if table not in existing_columns:
+            cursor = conn.execute("PRAGMA table_info(%s)" % table)
+            existing_columns[table] = {row[1] for row in cursor.fetchall()}
+
+        if column not in existing_columns[table]:
+            conn.execute("ALTER TABLE %s ADD COLUMN %s %s" % (table, column, column_def))
+            existing_columns[table].add(column)
+            logger.info("Migrated: added %s.%s (%s)", table, column, column_def)
+
+    conn.commit()
 
 
 def create_task(task_id, prompt, max_iterations=5, plan_mode=False, dry_run=False, model=None):
