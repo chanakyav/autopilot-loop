@@ -7,7 +7,7 @@ name = "autopilot-loop"
 version = "0.1.0"
 description = "Headless orchestrator that automates the Copilot coding-review-fix cycle"
 readme = "README.md"
-license = "MIT"
+license = {file = "LICENSE"}
 requires-python = ">=3.8"
 authors = [
     { name = "Chanakya Valluri", email = "chanakyav@github.com" },
