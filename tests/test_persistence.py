@@ -104,3 +104,51 @@ def test_last_review_id_persisted():
     persistence.update_task("t1", last_review_id=12345)
     task = persistence.get_task("t1")
     assert task["last_review_id"] == 12345
+
+
+def test_migration_from_pre_versioned_db(tmp_path, monkeypatch):
+    """Simulate upgrading a DB created before the versioning system existed."""
+    import sqlite3
+
+    db_path = str(tmp_path / "state.db")
+    monkeypatch.setattr(persistence, "DB_PATH", db_path)
+
+    # Create a minimal v1-era DB (no schema_meta, no last_review_id, no task_mode)
+    conn = sqlite3.connect(db_path)
+    conn.executescript("""
+        CREATE TABLE tasks (
+            id TEXT PRIMARY KEY,
+            prompt TEXT NOT NULL,
+            state TEXT NOT NULL DEFAULT 'INIT',
+            pr_number INTEGER,
+            branch TEXT,
+            iteration INTEGER NOT NULL DEFAULT 0,
+            max_iterations INTEGER NOT NULL DEFAULT 5,
+            plan_mode INTEGER NOT NULL DEFAULT 0,
+            dry_run INTEGER NOT NULL DEFAULT 0,
+            model TEXT,
+            created_at REAL NOT NULL,
+            updated_at REAL NOT NULL
+        );
+    """)
+    now = time.time()
+    conn.execute(
+        "INSERT INTO tasks (id, prompt, state, created_at, updated_at) VALUES (?, ?, 'INIT', ?, ?)",
+        ("old1", "old task", now, now),
+    )
+    conn.commit()
+    conn.close()
+
+    # Now open via _get_db — should migrate and add new columns
+    task = persistence.get_task("old1")
+    assert task is not None
+    assert task["id"] == "old1"
+    assert task["last_review_id"] is None
+    assert task["task_mode"] == "review"
+    assert task["ci_check_names"] is None
+
+    # New columns should be usable
+    persistence.update_task("old1", task_mode="ci", ci_check_names='["check-a"]')
+    task = persistence.get_task("old1")
+    assert task["task_mode"] == "ci"
+    assert task["ci_check_names"] == '["check-a"]'
