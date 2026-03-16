@@ -54,7 +54,7 @@ autopilot restart abc123                  # Restart a stopped task
 
 # Monitoring
 autopilot status                          # Show all task statuses (rich table)
-autopilot status --watch                  # Auto-refreshing live dashboard
+autopilot status --watch                  # Interactive dashboard with keybindings
 autopilot status --json                   # JSON output for scripting
 autopilot logs                            # Show latest task log
 autopilot logs --session abc123           # Show specific task log
@@ -64,6 +64,30 @@ autopilot logs --session abc123 --phase fix-1  # Show specific phase
 autopilot attach abc123                   # Attach to a task's tmux session
 autopilot next                            # Jump to next session needing attention
 ```
+
+### Interactive Dashboard (`--watch`)
+
+Full-screen TUI with animated spinners for active sessions:
+
+```
+╭─ autopilot-loop — Sessions ──────────────────────────────────────────────────╮
+│  #  Task ID   Mode    Branch                 State            PR   Iter  Age │
+│► 1  a1b2c3d4  review  autopilot/a1b2c3d4    ⠹ IMPLEMENT      -    0/5  < 1m │
+│  2  e5f6g7h8  ci      autopilot/e5f6g7h8    ◐ WAIT_CI        #43  1/5   3m  │
+│  3  i9j0k1l2  review  autopilot/i9j0k1l2    ■ STOPPED        #44  3/5  45m  │
+│  4  m3n4o5p6  review  autopilot/m3n4o5p6    ✓ COMPLETE       #45  2/5   1h  │
+╰──────────────────────────────────────────────────────────────────────────────╯
+ j/k navigate  Enter attach  x stop  r refresh  q quit
+```
+
+| Key | Action |
+|-----|--------|
+| `j` / `↓` | Move selection down |
+| `k` / `↑` | Move selection up |
+| `Enter` | Attach to selected tmux session |
+| `x` | Stop selected session |
+| `r` | Force refresh |
+| `q` / `Esc` | Quit |
 
 ## Configuration
 

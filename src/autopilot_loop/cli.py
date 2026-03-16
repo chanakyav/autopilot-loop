@@ -69,12 +69,29 @@ def _launch_in_tmux(task_id, mode="review", branch=None, pr_number=None):
     sessions_dir = get_sessions_dir(task_id)
     log_file = os.path.join(sessions_dir, "orchestrator.log")
     tmux_session = "autopilot-%s" % task_id
-    run_cmd = "autopilot _run --task-id %s 2>&1 | tee -a %s" % (task_id, log_file)
+
+    # Run orchestrator, then print summary and keep pane alive (#15)
+    run_cmd = (
+        "autopilot _run --task-id %s 2>&1 | tee -a %s; "
+        "echo ''; echo '=== Task %s finished ==='; "
+        "echo 'Run: autopilot status  or  autopilot logs --session %s'; "
+        "echo 'Press Enter to close this pane.'; read _dummy"
+        % (task_id, log_file, task_id, task_id)
+    )
 
     try:
         subprocess.run(
             ["tmux", "new-session", "-d", "-s", tmux_session, run_cmd],
             check=True,
+        )
+        # Enable mouse scrolling and increase scrollback buffer (#14)
+        subprocess.run(
+            ["tmux", "set-option", "-t", tmux_session, "mouse", "on"],
+            check=False, capture_output=True,
+        )
+        subprocess.run(
+            ["tmux", "set-option", "-t", tmux_session, "history-limit", "50000"],
+            check=False, capture_output=True,
         )
     except FileNotFoundError:
         logger.warning("tmux not found, running in foreground")
@@ -232,14 +249,23 @@ def cmd_resume(args):
 
 def cmd_status(args):
     """Show status of all autopilot tasks."""
-    from autopilot_loop.dashboard import status_json, status_table, status_watch
+    from autopilot_loop.dashboard import (
+        status_interactive,
+        status_json,
+        status_table,
+        status_watch,
+    )
 
     if getattr(args, "json", False):
         status_json()
         return
 
     if getattr(args, "watch", False):
-        status_watch(interval=getattr(args, "interval", 5))
+        interval = getattr(args, "interval", 2)
+        if sys.stdout.isatty():
+            status_interactive(interval=interval)
+        else:
+            status_watch(interval=interval)
         return
 
     status_table()
