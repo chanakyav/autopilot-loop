@@ -141,8 +141,21 @@ def cmd_resume(args):
     """Resume a task from an existing PR."""
     config = load_config()
 
-    task_id = _generate_task_id()
+    # Validate PR exists and get branch BEFORE creating any task state
+    try:
+        result = subprocess.run(
+            ["gh", "pr", "view", str(args.pr), "--json", "headRefName", "--jq", ".headRefName"],
+            capture_output=True, text=True, check=True,
+        )
+        branch = result.stdout.strip()
 
+        # Check out the branch
+        subprocess.run(["git", "checkout", branch], check=True)
+    except subprocess.CalledProcessError as e:
+        print("Error: could not fetch PR #%d: %s" % (args.pr, e), file=sys.stderr)
+        sys.exit(1)
+
+    task_id = _generate_task_id()
 
     create_task(
         task_id=task_id,
@@ -152,22 +165,7 @@ def cmd_resume(args):
     )
 
     from autopilot_loop.persistence import update_task
-    update_task(task_id, pr_number=args.pr, state="PARSE_REVIEW")
-
-    # Get branch from PR
-    try:
-        result = subprocess.run(
-            ["gh", "pr", "view", str(args.pr), "--json", "headRefName", "--jq", ".headRefName"],
-            capture_output=True, text=True, check=True,
-        )
-        branch = result.stdout.strip()
-        update_task(task_id, branch=branch)
-
-        # Check out the branch
-        subprocess.run(["git", "checkout", branch], check=True)
-    except subprocess.CalledProcessError as e:
-        print("Error: could not fetch PR #%d: %s" % (args.pr, e), file=sys.stderr)
-        sys.exit(1)
+    update_task(task_id, pr_number=args.pr, state="PARSE_REVIEW", branch=branch)
 
     # Launch in tmux
     sessions_dir = get_sessions_dir(task_id)

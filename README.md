@@ -67,6 +67,8 @@ Create `autopilot.json` in your repo root or `~/.autopilot-loop/config.json`:
   "review_timeout_seconds": 3600,
   "agent_timeout_seconds": 1800,
   "idle_timeout_minutes": 120,
+  "keepalive_enabled": false,
+  "keepalive_interval_seconds": 300,
   "branch_pattern": "autopilot/{task_id}",
   "custom_instructions": "Run tests with: bin/rails test <path>\nRun linting with: bin/rubocop <path>"
 }
@@ -97,5 +99,3 @@ All external calls are mocked in unit tests — no `copilot` or `gh` CLI needed 
 ## License
 
 MIT
-
-<!-- This is a comment in the README file -->

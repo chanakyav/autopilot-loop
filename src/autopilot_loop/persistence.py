@@ -38,6 +38,7 @@ CREATE TABLE IF NOT EXISTS tasks (
     plan_mode INTEGER NOT NULL DEFAULT 0,
     dry_run INTEGER NOT NULL DEFAULT 0,
     model TEXT,
+    last_review_id INTEGER,
     created_at REAL NOT NULL,
     updated_at REAL NOT NULL
 );
@@ -102,7 +103,7 @@ def get_task(task_id):
 
 _TASK_COLUMNS = frozenset({
     "prompt", "state", "pr_number", "branch", "iteration",
-    "max_iterations", "plan_mode", "dry_run", "model", "updated_at",
+    "max_iterations", "plan_mode", "dry_run", "model", "last_review_id", "updated_at",
 })
 
 

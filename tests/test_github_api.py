@@ -3,6 +3,9 @@
 import json
 from unittest.mock import MagicMock, patch
 
+import pytest
+
+import autopilot_loop.github_api as github_api_module
 from autopilot_loop.github_api import (
     find_pr_for_branch,
     get_copilot_review,
@@ -14,6 +17,14 @@ from autopilot_loop.github_api import (
     resolve_review_thread,
     verify_new_commits,
 )
+
+
+@pytest.fixture(autouse=True)
+def reset_nwo_cache():
+    """Reset the NWO cache between tests."""
+    github_api_module._nwo_cache = None
+    yield
+    github_api_module._nwo_cache = None
 
 
 def _mock_run(stdout="", returncode=0, stderr=""):
@@ -29,6 +40,14 @@ class TestGetRepoNwo:
     def test_returns_nwo(self):
         with patch("autopilot_loop.github_api.subprocess.run", return_value=_mock_run("octocat/hello-world")):
             assert get_repo_nwo() == "octocat/hello-world"
+
+    def test_caches_result(self):
+        mock_result = _mock_run("octocat/hello-world")
+        with patch("autopilot_loop.github_api.subprocess.run", return_value=mock_result) as mock_run:
+            get_repo_nwo()
+            get_repo_nwo()
+            # Should only call subprocess once due to caching
+            assert mock_run.call_count == 1
 
 
 class TestFindPrForBranch:
@@ -119,6 +138,8 @@ class TestResolveReviewThread:
             call_args = mock_gh.call_args[0][0]
             assert "graphql" in call_args
             assert "resolveReviewThread" in " ".join(call_args)
+            # Verify parameterized variable is used (not string interpolation)
+            assert any("id=thread_node_123" in a for a in call_args)
 
 
 class TestGetUnresolvedReviewComments:
@@ -173,6 +194,13 @@ class TestGetUnresolvedReviewComments:
             assert result[0]["thread_id"] == "T1"
             assert result[0]["body"] == "fix this"
 
+            # Verify parameterized variables are used
+            gql_call = mock_gh.call_args_list[1]
+            gql_args = gql_call[0][0]
+            assert any("owner=octocat" in a for a in gql_args)
+            assert any("name=hello-world" in a for a in gql_args)
+            assert any("number=42" in a for a in gql_args)
+
     def test_empty_when_all_resolved(self):
         graphql_response = {
             "data": {
@@ -209,18 +237,17 @@ class TestGetIssue:
 
 
 class TestVerifyNewCommits:
-    def test_new_commits(self):
-        with patch("autopilot_loop.github_api.subprocess.run") as mock_run:
-            mock_run.side_effect = [
-                _mock_run(),  # git fetch
-                _mock_run("newsha123"),  # git rev-parse
-            ]
-            assert verify_new_commits("branch", "oldsha456") is True
+    @patch("autopilot_loop.github_api.get_head_sha")
+    def test_new_commits(self, mock_sha):
+        mock_sha.return_value = "newsha123"
+        assert verify_new_commits("branch", "oldsha456") is True
 
-    def test_no_new_commits(self):
-        with patch("autopilot_loop.github_api.subprocess.run") as mock_run:
-            mock_run.side_effect = [
-                _mock_run(),  # git fetch
-                _mock_run("samesha"),  # git rev-parse
-            ]
-            assert verify_new_commits("branch", "samesha") is False
+    @patch("autopilot_loop.github_api.get_head_sha")
+    def test_no_new_commits(self, mock_sha):
+        mock_sha.return_value = "samesha"
+        assert verify_new_commits("branch", "samesha") is False
+
+    @patch("autopilot_loop.github_api.get_head_sha")
+    def test_error_returns_false(self, mock_sha):
+        mock_sha.return_value = None
+        assert verify_new_commits("branch", "sha") is False

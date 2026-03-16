@@ -52,21 +52,21 @@ def _run_gh(args, check=True):
     return result.stdout.strip()
 
 
-def _run_gh_json(args):
-    """Run a gh CLI command and parse stdout as JSON."""
-    output = _run_gh(args)
-    if not output:
-        return None
-    return json.loads(output)
+_nwo_cache = None
 
 
 def get_repo_nwo():
     """Get the current repo's owner/name (nameWithOwner).
 
+    Cached after the first call to avoid repeated `gh repo view` subprocess calls.
+
     Returns:
         String like 'owner/repo'.
     """
-    return _run_gh(["repo", "view", "--json", "nameWithOwner", "--jq", ".nameWithOwner"])
+    global _nwo_cache
+    if _nwo_cache is None:
+        _nwo_cache = _run_gh(["repo", "view", "--json", "nameWithOwner", "--jq", ".nameWithOwner"])
+    return _nwo_cache
 
 
 def find_pr_for_branch(branch):
@@ -87,18 +87,8 @@ def verify_new_commits(branch, since_sha):
     Returns:
         True if new commits exist.
     """
-    try:
-        # Fetch latest
-        subprocess.run(["git", "fetch", "origin", branch], capture_output=True, check=True)
-        # Get current HEAD of remote branch
-        result = subprocess.run(
-            ["git", "rev-parse", "origin/%s" % branch],
-            capture_output=True, text=True, check=True,
-        )
-        current_sha = result.stdout.strip()
-        return current_sha != since_sha
-    except subprocess.CalledProcessError:
-        return False
+    current_sha = get_head_sha(branch)
+    return current_sha is not None and current_sha != since_sha
 
 
 def get_head_sha(branch):
@@ -208,8 +198,8 @@ def resolve_review_thread(thread_node_id):
     Args:
         thread_node_id: The GraphQL node ID of the review thread.
     """
-    query = 'mutation { resolveReviewThread(input: {threadId: "%s"}) { thread { isResolved } } }' % thread_node_id
-    _run_gh(["api", "graphql", "-f", "query=%s" % query])
+    query = 'mutation($id: ID!) { resolveReviewThread(input: {threadId: $id}) { thread { isResolved } } }'
+    _run_gh(["api", "graphql", "-f", "query=%s" % query, "-F", "id=%s" % thread_node_id])
     logger.debug("Resolved thread %s", thread_node_id)
 
 
@@ -224,9 +214,9 @@ def get_unresolved_review_comments(pr_number):
     nwo = get_repo_nwo()
     owner, repo = nwo.split("/", 1)
     query = """
-    {
-      repository(owner: "%s", name: "%s") {
-        pullRequest(number: %d) {
+    query($owner: String!, $name: String!, $number: Int!) {
+      repository(owner: $owner, name: $name) {
+        pullRequest(number: $number) {
           reviewThreads(first: 100) {
             nodes {
               id
@@ -246,9 +236,15 @@ def get_unresolved_review_comments(pr_number):
         }
       }
     }
-    """ % (owner, repo, pr_number)
+    """
 
-    output = _run_gh(["api", "graphql", "-f", "query=%s" % query.strip()], check=False)
+    output = _run_gh([
+        "api", "graphql",
+        "-f", "query=%s" % query.strip(),
+        "-F", "owner=%s" % owner,
+        "-F", "name=%s" % repo,
+        "-F", "number=%d" % pr_number,
+    ], check=False)
     if not output:
         return []
 

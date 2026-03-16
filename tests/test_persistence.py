@@ -95,3 +95,12 @@ def test_create_task_with_flags():
     task = persistence.get_task("t1")
     assert task["plan_mode"] == 1
     assert task["dry_run"] == 1
+
+
+def test_last_review_id_persisted():
+    persistence.create_task("t1", "prompt")
+    task = persistence.get_task("t1")
+    assert task["last_review_id"] is None
+    persistence.update_task("t1", last_review_id=12345)
+    task = persistence.get_task("t1")
+    assert task["last_review_id"] == 12345

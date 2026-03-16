@@ -38,4 +38,5 @@ Thumbs.db
 # Project-specific
 *.db
 plan.md
+autopilot.json
 .autopilot-fix-summary.json

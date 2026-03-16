@@ -67,7 +67,7 @@ class Orchestrator:
         self.task = get_task(task_id)
         self.sessions_dir = get_sessions_dir(task_id)
         self._retry_counts = {}  # phase -> retry count
-        self._last_review_id = None  # tracks the last processed review ID
+        self._last_review_id = self.task.get("last_review_id")  # restore from DB
 
     def run(self):
         """Run the state machine until COMPLETE or FAILED."""
@@ -133,55 +133,51 @@ class Orchestrator:
             AgentResult on success, or None on exhausted retries.
         """
         max_retries = self.config.get("max_retries_per_phase", 1)
-        retry_count = self._retry_counts.get(phase, 0)
 
-        session_file_name = session_name
-        if retry_count > 0:
-            session_file_name = "%s-retry%d" % (session_name, retry_count)
+        for attempt in range(max_retries + 1):
+            session_file_name = session_name
+            if attempt > 0:
+                session_file_name = "%s-retry%d" % (session_name, attempt)
 
-        # Create phase-specific session dir
-        phase_session_dir = os.path.join(self.sessions_dir, session_file_name)
-        os.makedirs(phase_session_dir, exist_ok=True)
+            # Create phase-specific session dir
+            phase_session_dir = os.path.join(self.sessions_dir, session_file_name)
+            os.makedirs(phase_session_dir, exist_ok=True)
 
-        started_at = time.time()
-        result = run_agent(
-            prompt=prompt,
-            session_dir=phase_session_dir,
-            model=self.config.get("model", "claude-opus-4.6"),
-            timeout=self.config.get("agent_timeout_seconds", 1800),
-        )
-        ended_at = time.time()
-
-        # Copy session file to top-level sessions dir with a readable name
-        src = result.session_file
-        dst = os.path.join(self.sessions_dir, "%s.md" % session_file_name)
-        if os.path.isfile(src):
-            import shutil
-            shutil.copy2(src, dst)
-            result.session_file = dst
-
-        save_agent_run(
-            task_id=self.task_id,
-            phase=phase,
-            started_at=started_at,
-            ended_at=ended_at,
-            exit_code=result.exit_code,
-            session_file=result.session_file,
-            retry_count=retry_count,
-        )
-
-        if result.success:
-            self._retry_counts[phase] = 0
-            return result
-
-        # Retry logic
-        if retry_count < max_retries:
-            logger.warning(
-                "[%s] Agent failed (exit %d) in %s, retrying (%d/%d)",
-                self.task_id, result.exit_code, phase, retry_count + 1, max_retries,
+            started_at = time.time()
+            result = run_agent(
+                prompt=prompt,
+                session_dir=phase_session_dir,
+                model=self.config.get("model", "claude-opus-4.6"),
+                timeout=self.config.get("agent_timeout_seconds", 1800),
             )
-            self._retry_counts[phase] = retry_count + 1
-            return self._run_agent_with_retry(phase, prompt, session_name)
+            ended_at = time.time()
+
+            # Copy session file to top-level sessions dir with a readable name
+            src = result.session_file
+            dst = os.path.join(self.sessions_dir, "%s.md" % session_file_name)
+            if os.path.isfile(src):
+                import shutil
+                shutil.copy2(src, dst)
+                result.session_file = dst
+
+            save_agent_run(
+                task_id=self.task_id,
+                phase=phase,
+                started_at=started_at,
+                ended_at=ended_at,
+                exit_code=result.exit_code,
+                session_file=result.session_file,
+                retry_count=attempt,
+            )
+
+            if result.success:
+                return result
+
+            if attempt < max_retries:
+                logger.warning(
+                    "[%s] Agent failed (exit %d) in %s, retrying (%d/%d)",
+                    self.task_id, result.exit_code, phase, attempt + 1, max_retries,
+                )
 
         logger.error(
             "[%s] Agent failed (exit %d) in %s after %d retries",
@@ -271,6 +267,7 @@ class Orchestrator:
         current_review = get_copilot_review(pr_number)
         if current_review:
             self._last_review_id = current_review.get("id", 0)
+            update_task(self.task_id, last_review_id=self._last_review_id)
             logger.debug("[%s] Last review ID before request: %s", self.task_id, self._last_review_id)
 
         try:
