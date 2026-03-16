@@ -97,6 +97,27 @@ def test_create_task_with_flags():
     assert task["dry_run"] == 1
 
 
+def test_stopped_state_persisted():
+    persistence.create_task("t1", "prompt")
+    persistence.update_task("t1", state="STOPPED", pre_stop_state="FIX")
+    task = persistence.get_task("t1")
+    assert task["state"] == "STOPPED"
+    assert task["pre_stop_state"] == "FIX"
+
+
+def test_existing_branch_persisted():
+    persistence.create_task("t1", "prompt")
+    persistence.update_task("t1", existing_branch=1)
+    task = persistence.get_task("t1")
+    assert task["existing_branch"] == 1
+
+
+def test_existing_branch_defaults_to_zero():
+    persistence.create_task("t1", "prompt")
+    task = persistence.get_task("t1")
+    assert task["existing_branch"] == 0
+
+
 def test_last_review_id_persisted():
     persistence.create_task("t1", "prompt")
     task = persistence.get_task("t1")
@@ -146,6 +167,8 @@ def test_migration_from_pre_versioned_db(tmp_path, monkeypatch):
     assert task["last_review_id"] is None
     assert task["task_mode"] == "review"
     assert task["ci_check_names"] is None
+    assert task["pre_stop_state"] is None
+    assert task["existing_branch"] == 0
 
     # New columns should be usable
     persistence.update_task("old1", task_mode="ci", ci_check_names='["check-a"]')

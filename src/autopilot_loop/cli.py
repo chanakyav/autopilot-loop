@@ -38,6 +38,24 @@ def _generate_task_id():
     return uuid.uuid4().hex[:8]
 
 
+def _detect_autopilot_branch():
+    """If the current git branch matches autopilot/*, return the branch name.
+
+    Returns None if not on an autopilot branch or git is unavailable.
+    """
+    try:
+        result = subprocess.run(
+            ["git", "branch", "--show-current"],
+            capture_output=True, text=True, check=True,
+        )
+        branch = result.stdout.strip()
+        if branch.startswith("autopilot/"):
+            return branch
+    except (FileNotFoundError, subprocess.CalledProcessError):
+        pass
+    return None
+
+
 def cmd_start(args):
     """Start a new autopilot task."""
     config = load_config({
@@ -57,7 +75,14 @@ def cmd_start(args):
         sys.exit(1)
 
     task_id = _generate_task_id()
-    branch = config["branch_pattern"].format(task_id=task_id)
+
+    # Detect if we're already on an autopilot branch
+    existing_branch = _detect_autopilot_branch()
+    if existing_branch:
+        branch = existing_branch
+        logger.info("Detected existing autopilot branch: %s", branch)
+    else:
+        branch = config["branch_pattern"].format(task_id=task_id)
 
     create_task(
         task_id=task_id,
@@ -70,6 +95,9 @@ def cmd_start(args):
 
     from autopilot_loop.persistence import update_task
     update_task(task_id, branch=branch)
+
+    if existing_branch:
+        update_task(task_id, existing_branch=1)
 
     if args.dry_run:
         print("DRY RUN — would start task %s" % task_id)
@@ -392,12 +420,74 @@ def cmd_stop(args):
     except (subprocess.CalledProcessError, FileNotFoundError):
         print("No tmux session found for task %s" % task_id)
 
-    # Update task state
+    # Update task state — save the current state before marking STOPPED
     task = get_task(task_id)
-    if task and task["state"] not in ("COMPLETE", "FAILED"):
+    if task and task["state"] not in ("COMPLETE", "FAILED", "STOPPED"):
         from autopilot_loop.persistence import update_task
-        update_task(task_id, state="FAILED")
-        print("✓ Task %s marked as FAILED" % task_id)
+        update_task(task_id, pre_stop_state=task["state"], state="STOPPED")
+        print("✓ Task %s marked as STOPPED" % task_id)
+
+
+def cmd_restart(args):
+    """Restart a stopped task from its current phase."""
+    task_id = args.task_id
+    task = get_task(task_id)
+
+    if not task:
+        print("Error: task %s not found" % task_id, file=sys.stderr)
+        sys.exit(1)
+
+    if task["state"] != "STOPPED":
+        print("Error: task %s is in state %s, only STOPPED tasks can be restarted" % (task_id, task["state"]),
+              file=sys.stderr)
+        sys.exit(1)
+
+    config = load_config({"model": task["model"]})
+
+    # Determine the phase to restart from. For states that are mid-action
+    # (e.g. FIX, IMPLEMENT), restart from the beginning of that phase.
+    # For waiting states, restart from the state that triggered the wait.
+    restart_state = task["state"]
+    stopped_state = task.get("pre_stop_state") or "INIT"
+
+    # Map waiting/verification states back to their action states
+    _RESTART_STATE_MAP = {
+        "VERIFY_PUSH": "FIX" if task.get("task_mode") != "ci" else "FIX_CI",
+        "WAIT_REVIEW": "REQUEST_REVIEW",
+        "WAIT_CI": "FIX_CI",
+        "VERIFY_PR": "IMPLEMENT",
+    }
+    restart_state = _RESTART_STATE_MAP.get(stopped_state, stopped_state)
+
+    from autopilot_loop.persistence import update_task
+    update_task(task_id, state=restart_state)
+
+    # Launch in tmux
+    sessions_dir = get_sessions_dir(task_id)
+    log_file = os.path.join(sessions_dir, "orchestrator.log")
+    tmux_session = "autopilot-%s" % task_id
+    run_cmd = "autopilot _run --task-id %s 2>&1 | tee -a %s" % (task_id, log_file)
+
+    try:
+        subprocess.run(
+            ["tmux", "new-session", "-d", "-s", tmux_session, run_cmd],
+            check=True,
+        )
+    except FileNotFoundError:
+        logger.warning("tmux not found, running in foreground")
+        cmd_run(argparse.Namespace(task_id=task_id))
+        return
+    except subprocess.CalledProcessError as e:
+        print("Error: failed to create tmux session: %s" % e, file=sys.stderr)
+        sys.exit(1)
+
+    print("✓ Restarting task %s from state %s" % (task_id, restart_state))
+    print("✓ Running in tmux session: %s" % tmux_session)
+    print()
+    print("  To check progress:  autopilot status")
+    print("  To view logs:       autopilot logs --session %s" % task_id)
+    print("  To attach to tmux:  tmux attach -t %s" % tmux_session)
+    print("  To stop:            autopilot stop %s" % task_id)
 
 
 def main():
@@ -433,6 +523,10 @@ def main():
     p_stop = subparsers.add_parser("stop", help="Stop a running task")
     p_stop.add_argument("task_id", type=str, help="Task ID to stop")
 
+    # restart
+    p_restart = subparsers.add_parser("restart", help="Restart a stopped task")
+    p_restart.add_argument("task_id", type=str, help="Task ID to restart")
+
     # fix-ci
     p_fixci = subparsers.add_parser("fix-ci", help="Fix CI failures on an existing PR")
     p_fixci.add_argument("--pr", type=int, required=True, help="PR number")
@@ -457,6 +551,8 @@ def main():
         cmd_logs(args)
     elif args.command == "stop":
         cmd_stop(args)
+    elif args.command == "restart":
+        cmd_restart(args)
     elif args.command == "fix-ci":
         cmd_fix_ci(args)
     elif args.command == "_run":

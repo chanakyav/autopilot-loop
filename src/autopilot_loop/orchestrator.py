@@ -41,6 +41,7 @@ from autopilot_loop.prompts import (
     fix_prompt,
     format_ci_annotations_for_prompt,
     format_review_for_prompt,
+    implement_on_existing_branch_prompt,
     implement_prompt,
     plan_and_implement_prompt,
 )
@@ -63,7 +64,11 @@ STATES = [
     "RESOLVE_COMMENTS",
     "COMPLETE",
     "FAILED",
+    "STOPPED",
 ]
+
+# Terminal states — the orchestrator stops when reaching any of these
+TERMINAL_STATES = frozenset({"COMPLETE", "FAILED", "STOPPED"})
 
 
 class BaseOrchestrator:
@@ -81,11 +86,11 @@ class BaseOrchestrator:
         raise NotImplementedError
 
     def run(self):
-        """Run the state machine until COMPLETE or FAILED."""
+        """Run the state machine until a terminal state (COMPLETE, FAILED, or STOPPED)."""
         state = self.task["state"]
         logger.info("[%s] Starting orchestrator from state: %s", self.task_id, state)
 
-        while state not in ("COMPLETE", "FAILED"):
+        while state not in TERMINAL_STATES:
             logger.info("[%s] %s", self.task_id, state)
             try:
                 state = self._transition(state)
@@ -253,11 +258,20 @@ class Orchestrator(BaseOrchestrator):
     def _do_implement(self):
         """Run copilot agent with implement prompt."""
         branch = self.task["branch"]
-        prompt = implement_prompt(
-            task_description=self.task["prompt"],
-            branch_name=branch,
-            custom_instructions=self.config.get("custom_instructions", ""),
-        )
+
+        # Use existing-branch prompt if the branch already exists remotely
+        if self.task.get("existing_branch"):
+            prompt = implement_on_existing_branch_prompt(
+                task_description=self.task["prompt"],
+                branch_name=branch,
+                custom_instructions=self.config.get("custom_instructions", ""),
+            )
+        else:
+            prompt = implement_prompt(
+                task_description=self.task["prompt"],
+                branch_name=branch,
+                custom_instructions=self.config.get("custom_instructions", ""),
+            )
 
         result = self._run_agent_with_retry("IMPLEMENT", prompt, "implement")
         if result is None:
