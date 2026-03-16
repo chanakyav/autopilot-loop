@@ -103,6 +103,8 @@ Full-screen TUI with animated spinners, detail panel, and built-in log viewer:
 |-----|--------|
 | `j` / `↓` | Scroll down |
 | `k` / `↑` | Scroll up |
+| `Ctrl-D` | Page down (half screen) |
+| `Ctrl-U` | Page up (half screen) |
 | `G` | Jump to end |
 | `g` | Jump to top |
 | `q` / `Esc` | Back to session list |

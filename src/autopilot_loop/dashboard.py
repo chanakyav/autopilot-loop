@@ -338,6 +338,7 @@ def _build_footer_logs():
     footer = Text()
     keys = [
         ("j/k", "scroll"),
+        ("Ctrl-D/U", "page"),
         ("G", "end"),
         ("g", "top"),
         ("q", "back"),
@@ -472,6 +473,11 @@ def _read_key(fd, timeout=2.0):
         return "end"
     if b == ord("g"):
         return "top"
+    # Ctrl-D = page down, Ctrl-U = page up
+    if b == 4:
+        return "pagedown"
+    if b == 21:
+        return "pageup"
 
     return None
 
@@ -483,13 +489,15 @@ def _read_key(fd, timeout=2.0):
 _ENTER_ALT_SCREEN = "\x1b[?1049h"
 _EXIT_ALT_SCREEN = "\x1b[?1049l"
 _CLEAR_SCREEN = "\x1b[2J\x1b[H"
+_HOME_CURSOR = "\x1b[H"
+_CLEAR_TO_END = "\x1b[J"
 _HIDE_CURSOR = "\x1b[?25l"
 _SHOW_CURSOR = "\x1b[?25h"
 
 
 def _enter_tui():
     """Enter the alternate screen buffer and hide cursor."""
-    sys.stdout.write(_ENTER_ALT_SCREEN + _HIDE_CURSOR)
+    sys.stdout.write(_ENTER_ALT_SCREEN + _HIDE_CURSOR + _CLEAR_SCREEN)
     sys.stdout.flush()
 
 
@@ -499,9 +507,18 @@ def _exit_tui():
     sys.stdout.flush()
 
 
-def _clear():
-    """Clear the alternate screen and move cursor to top-left."""
-    sys.stdout.write(_CLEAR_SCREEN)
+def _render_frame(console, renderable):
+    """Render a frame without flicker.
+
+    Homes the cursor, prints a top margin, renders content,
+    then clears any leftover lines from the previous frame.
+    Zero-flicker: no full-screen erase between frames.
+    """
+    with console.capture() as capture:
+        console.print(renderable)
+    output = capture.get()
+    # Home cursor + top margin + content + clear remainder
+    sys.stdout.write(_HOME_CURSOR + "\n" + output + _CLEAR_TO_END)
     sys.stdout.flush()
 
 
@@ -621,25 +638,28 @@ def _logs_view(fd, old_settings, task_id, interval=2):
     from rich.panel import Panel
     from rich.text import Text
 
-    scroll_offset = 0
     lines = _read_log_full(task_id)
     if not lines:
         return "No logs available for task %s" % task_id
 
-    # Jump to end by default
-    console_height = os.get_terminal_size().lines - 6  # borders + footer
+    # Pre-style all lines once (only re-style on log refresh)
+    styled_lines = [_style_log_line(line) for line in lines]
+
+    console_height = os.get_terminal_size().lines - 7  # borders + footer + margin
+    half_page = max(1, console_height // 2)
     scroll_offset = max(0, len(lines) - console_height)
 
     while True:
+        # Render in cooked mode
         termios.tcsetattr(fd, termios.TCSADRAIN, old_settings)
-        _clear()
 
         console = Console()
-        visible = lines[scroll_offset:scroll_offset + console_height]
+        max_offset = max(0, len(lines) - console_height)
+        visible = styled_lines[scroll_offset:scroll_offset + console_height]
 
         log_text = Text()
-        for line in visible:
-            log_text.append_text(_style_log_line(line))
+        for styled in visible:
+            log_text.append_text(styled)
             log_text.append("\n")
 
         panel = Panel(
@@ -661,8 +681,9 @@ def _logs_view(fd, old_settings, task_id, interval=2):
             style="dim",
         )
 
-        console.print(Group(panel, _build_footer_logs(), position))
+        _render_frame(console, Group(panel, _build_footer_logs(), position))
 
+        # Raw mode only for key reading
         tty.setraw(fd)
         key = _read_key(fd, timeout=interval)
 
@@ -670,16 +691,22 @@ def _logs_view(fd, old_settings, task_id, interval=2):
             return None
 
         if key == "down":
-            scroll_offset = min(scroll_offset + 1, max(0, len(lines) - console_height))
+            scroll_offset = min(scroll_offset + 1, max_offset)
         elif key == "up":
             scroll_offset = max(scroll_offset - 1, 0)
+        elif key == "pagedown":
+            scroll_offset = min(scroll_offset + half_page, max_offset)
+        elif key == "pageup":
+            scroll_offset = max(scroll_offset - half_page, 0)
         elif key == "end":
-            scroll_offset = max(0, len(lines) - console_height)
+            scroll_offset = max_offset
         elif key == "top":
             scroll_offset = 0
         elif key is None:
             # Timeout — re-read log in case it grew
             lines = _read_log_full(task_id)
+            styled_lines = [_style_log_line(line) for line in lines]
+            max_offset = max(0, len(lines) - console_height)
             if not lines:
                 return None
 
@@ -765,18 +792,16 @@ def status_interactive(interval=2):
 
     try:
         _enter_tui()
-        tty.setraw(fd)
 
         while True:
-            # Restore cooked mode for rendering
+            # Render in cooked mode for correct terminal width
             termios.tcsetattr(fd, termios.TCSADRAIN, old_settings)
-            _clear()
 
             console = Console()
             content, tasks = render_main(console)
-            console.print(content)
+            _render_frame(console, content)
 
-            # Back to raw mode for key reading
+            # Raw mode only for key reading
             tty.setraw(fd)
             key = _read_key(fd, timeout=interval)
 
