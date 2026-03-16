@@ -67,18 +67,24 @@ autopilot next                            # Jump to next session needing attenti
 
 ### Interactive Dashboard (`--watch`)
 
-Full-screen TUI with animated spinners for active sessions:
+Full-screen TUI with animated spinners, detail panel, and built-in log viewer:
 
 ```
-╭─ autopilot-loop — Sessions ──────────────────────────────────────────────────╮
-│  #  Task ID   Mode    Branch                 State            PR   Iter  Age │
-│► 1  a1b2c3d4  review  autopilot/a1b2c3d4    ⠹ IMPLEMENT      -    0/5  < 1m │
-│  2  e5f6g7h8  ci      autopilot/e5f6g7h8    ◐ WAIT_CI        #43  1/5   3m  │
-│  3  i9j0k1l2  review  autopilot/i9j0k1l2    ■ STOPPED        #44  3/5  45m  │
-│  4  m3n4o5p6  review  autopilot/m3n4o5p6    ✓ COMPLETE       #45  2/5   1h  │
-╰──────────────────────────────────────────────────────────────────────────────╯
- j/k navigate  Enter attach  x stop  r refresh  q quit
+┏━ autopilot-loop — Sessions (3) ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓
+┃                                                                              ┃
+┃   #   Task ID    Mode     Branch                  State          PR    Iter   ┃
+┃                                                                              ┃
+┃   ► 1  a1b2c3d4  review   autopilot/a1b2c3d4     ⠹ IMPLEMENT    -     0/5   ┃
+┃                                                                              ┃
+┃     2  e5f6g7h8  ci       autopilot/e5f6g7h8     ◐ WAIT_CI      #43   1/5   ┃
+┃                                                                              ┃
+┃     3  i9j0k1l2  review   autopilot/i9j0k1l2     ■ STOPPED      #44   3/5   ┃
+┃                                                                              ┃
+┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛
+ j/k navigate  Enter attach  x stop  l logs  d detail  r refresh  q quit
 ```
+
+**Session list keybindings:**
 
 | Key | Action |
 |-----|--------|
@@ -86,8 +92,22 @@ Full-screen TUI with animated spinners for active sessions:
 | `k` / `↑` | Move selection up |
 | `Enter` | Attach to selected tmux session |
 | `x` | Stop selected session |
+| `l` | Open log viewer for selected task |
+| `d` / `Space` | Toggle detail panel (task info + log tail) |
 | `r` | Force refresh |
-| `q` / `Esc` | Quit |
+| `q` / `Esc` | Quit (or close panel) |
+
+**Log viewer keybindings** (inside `l`):
+
+| Key | Action |
+|-----|--------|
+| `j` / `↓` | Scroll down |
+| `k` / `↑` | Scroll up |
+| `G` | Jump to end |
+| `g` | Jump to top |
+| `q` / `Esc` | Back to session list |
+
+All actions are safe — errors show a status message instead of crashing. The dashboard runs in an alternate screen buffer (no scrollback bleed).
 
 ## Configuration
 
