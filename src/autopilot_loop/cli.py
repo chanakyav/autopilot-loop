@@ -1,6 +1,6 @@
 """CLI entry point for autopilot-loop.
 
-Subcommands: start, resume, status, logs, stop, _run (internal).
+Subcommands: start, resume, status, logs, stop, restart, fix-ci, attach, next.
 """
 
 import argparse
@@ -9,7 +9,6 @@ import logging
 import os
 import subprocess
 import sys
-import time
 import uuid
 
 from autopilot_loop.config import load_config
@@ -162,35 +161,7 @@ def cmd_start(args):
         print("  Prompt: %s" % prompt[:200])
         return
 
-    # Launch in tmux
-    sessions_dir = get_sessions_dir(task_id)
-    log_file = os.path.join(sessions_dir, "orchestrator.log")
-    tmux_session = "autopilot-%s" % task_id
-
-    # Build the command to run inside tmux
-    run_cmd = "autopilot _run --task-id %s 2>&1 | tee -a %s" % (task_id, log_file)
-
-    try:
-        subprocess.run(
-            ["tmux", "new-session", "-d", "-s", tmux_session, run_cmd],
-            check=True,
-        )
-    except FileNotFoundError:
-        # tmux not available — run in foreground
-        logger.warning("tmux not found, running in foreground")
-        cmd_run(argparse.Namespace(task_id=task_id))
-        return
-    except subprocess.CalledProcessError as e:
-        print("Error: failed to create tmux session: %s" % e, file=sys.stderr)
-        sys.exit(1)
-
-    print("✓ Task %s created" % task_id)
-    print("✓ Running in tmux session: %s" % tmux_session)
-    print()
-    print("  To check progress:  autopilot status")
-    print("  To view logs:       autopilot logs --session %s" % task_id)
-    print("  To attach to tmux:  tmux attach -t %s" % tmux_session)
-    print("  To stop:            autopilot stop %s" % task_id)
+    _launch_in_tmux(task_id, mode="review", branch=branch)
 
 
 def cmd_run(args):
@@ -261,165 +232,17 @@ def cmd_resume(args):
 
 def cmd_status(args):
     """Show status of all autopilot tasks."""
+    from autopilot_loop.dashboard import status_json, status_table, status_watch
+
     if getattr(args, "json", False):
-        _status_json()
+        status_json()
         return
 
     if getattr(args, "watch", False):
-        _status_watch(interval=getattr(args, "interval", 5))
+        status_watch(interval=getattr(args, "interval", 5))
         return
 
-    _status_table()
-
-
-def _format_elapsed(created_at):
-    elapsed = time.time() - created_at
-    if elapsed < 60:
-        return "< 1m"
-    elif elapsed < 3600:
-        return "%dm ago" % (elapsed / 60)
-    else:
-        return "%.1fh ago" % (elapsed / 3600)
-
-
-_STATE_STYLES = {
-    "COMPLETE": "green",
-    "FAILED": "red",
-    "STOPPED": "yellow",
-    "WAIT_REVIEW": "cyan",
-    "WAIT_CI": "cyan",
-    "IMPLEMENT": "blue",
-    "PLAN_AND_IMPLEMENT": "blue",
-    "FIX": "magenta",
-    "FIX_CI": "magenta",
-}
-
-_STATE_INDICATORS = {
-    "COMPLETE": "✓",
-    "FAILED": "✗",
-    "STOPPED": "■",
-}
-
-
-def _status_table():
-    """Print a rich table of all tasks."""
-    from rich.console import Console
-    from rich.table import Table
-
-    tasks = list_tasks()
-    if not tasks:
-        print("No tasks found.")
-        return
-
-    console = Console()
-    table = Table(title="autopilot-loop — Sessions", border_style="dim")
-    table.add_column("#", style="dim", width=3)
-    table.add_column("Task ID", style="bold")
-    table.add_column("Mode")
-    table.add_column("Branch")
-    table.add_column("State")
-    table.add_column("PR")
-    table.add_column("Iter")
-    table.add_column("Elapsed", justify="right")
-
-    for i, t in enumerate(tasks, 1):
-        state = t["state"]
-        style = _STATE_STYLES.get(state, "")
-        indicator = _STATE_INDICATORS.get(state, "●")
-        state_display = "%s %s" % (indicator, state)
-        pr = "#%d" % t["pr_number"] if t["pr_number"] else "-"
-        iteration = "%d/%d" % (t["iteration"], t["max_iterations"])
-        mode = t.get("task_mode", "review")
-        branch = t.get("branch") or "-"
-        # Truncate long branch names
-        if len(branch) > 30:
-            branch = branch[:27] + "..."
-        elapsed = _format_elapsed(t["created_at"])
-
-        table.add_row(
-            str(i), t["id"], mode, branch,
-            "[%s]%s[/]" % (style, state_display) if style else state_display,
-            pr, iteration, elapsed,
-        )
-
-    console.print(table)
-
-    # Show active count
-    active = get_active_tasks()
-    if active:
-        console.print("\\n[dim]%d active session(s)[/dim]" % len(active))
-
-
-def _status_json():
-    """Print task status as JSON."""
-    tasks = list_tasks()
-    output = []
-    for t in tasks:
-        output.append({
-            "id": t["id"],
-            "state": t["state"],
-            "mode": t.get("task_mode", "review"),
-            "branch": t.get("branch"),
-            "pr_number": t.get("pr_number"),
-            "iteration": t["iteration"],
-            "max_iterations": t["max_iterations"],
-            "elapsed_seconds": round(time.time() - t["created_at"]),
-        })
-    print(json.dumps(output, indent=2))
-
-
-def _status_watch(interval=5):
-    """Auto-refreshing status display."""
-    from rich.console import Console
-    from rich.live import Live
-    from rich.table import Table
-
-    console = Console()
-
-    def build_table():
-        tasks = list_tasks()
-        if not tasks:
-            table = Table(title="autopilot-loop — No sessions")
-            return table
-
-        table = Table(title="autopilot-loop — Sessions (refreshing every %ds)" % interval,
-                      border_style="dim")
-        table.add_column("#", style="dim", width=3)
-        table.add_column("Task ID", style="bold")
-        table.add_column("Mode")
-        table.add_column("Branch")
-        table.add_column("State")
-        table.add_column("PR")
-        table.add_column("Iter")
-        table.add_column("Elapsed", justify="right")
-
-        for i, t in enumerate(tasks, 1):
-            state = t["state"]
-            style = _STATE_STYLES.get(state, "")
-            indicator = _STATE_INDICATORS.get(state, "●")
-            state_display = "%s %s" % (indicator, state)
-            pr = "#%d" % t["pr_number"] if t["pr_number"] else "-"
-            iteration = "%d/%d" % (t["iteration"], t["max_iterations"])
-            mode = t.get("task_mode", "review")
-            branch = t.get("branch") or "-"
-            if len(branch) > 30:
-                branch = branch[:27] + "..."
-            elapsed = _format_elapsed(t["created_at"])
-
-            table.add_row(
-                str(i), t["id"], mode, branch,
-                "[%s]%s[/]" % (style, state_display) if style else state_display,
-                pr, iteration, elapsed,
-            )
-        return table
-
-    try:
-        with Live(build_table(), console=console, refresh_per_second=1) as live:
-            while True:
-                time.sleep(interval)
-                live.update(build_table())
-    except KeyboardInterrupt:
-        pass
+    status_table()
 
 
 def cmd_attach(args):
