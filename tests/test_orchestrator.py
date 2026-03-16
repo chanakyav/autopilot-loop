@@ -247,3 +247,21 @@ class TestOrchestratorFullLoop:
         # Verify comments were resolved
         assert mock_reply.called
         assert mock_resolve.called
+
+    @patch("autopilot_loop.orchestrator.set_idle_timeout")
+    @patch("autopilot_loop.orchestrator.get_unresolved_review_comments")
+    @patch("autopilot_loop.orchestrator.get_copilot_review")
+    def test_resume_starts_at_parse_review(
+        self, mock_review, mock_unresolved, mock_timeout, config,
+    ):
+        """Resume skips REQUEST_REVIEW and goes straight to PARSE_REVIEW."""
+        mock_review.return_value = {"id": 100, "body": "LGTM"}
+        mock_unresolved.return_value = []
+
+        task_id = _create_test_task()
+        persistence.update_task(task_id, pr_number=42, state="PARSE_REVIEW")
+        orch = Orchestrator(task_id, config)
+        result = orch.run()
+        assert result["state"] == "COMPLETE"
+        # Should NOT have been called — we skipped REQUEST_REVIEW
+        # (no request_copilot_review mock needed = it was never called)

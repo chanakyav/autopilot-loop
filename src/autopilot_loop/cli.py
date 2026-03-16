@@ -152,7 +152,7 @@ def cmd_resume(args):
     )
 
     from autopilot_loop.persistence import update_task
-    update_task(task_id, pr_number=args.pr, state="REQUEST_REVIEW")
+    update_task(task_id, pr_number=args.pr, state="PARSE_REVIEW")
 
     # Get branch from PR
     try:
