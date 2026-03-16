@@ -118,7 +118,7 @@ def _get_db():
     conn.executescript(SCHEMA)
 
     # Apply additive migrations for versions newer than what the DB has
-    if db_version > 0 and db_version < SCHEMA_VERSION:
+    if not needs_create and db_version < SCHEMA_VERSION:
         _migrate(conn, db_version)
 
     # Stamp the current version
