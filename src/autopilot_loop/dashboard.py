@@ -808,6 +808,8 @@ def status_interactive(interval=2):
             if key in ("quit", "esc"):
                 if detail_open:
                     detail_open = False
+                    sys.stdout.write(_CLEAR_SCREEN)
+                    sys.stdout.flush()
                 else:
                     break
 
@@ -836,6 +838,8 @@ def status_interactive(interval=2):
 
             elif key == "detail":
                 detail_open = not detail_open
+                sys.stdout.write(_CLEAR_SCREEN)
+                sys.stdout.flush()
 
             elif key == "logs":
                 tasks = list_tasks()
@@ -843,6 +847,9 @@ def status_interactive(interval=2):
                     msg = _logs_view(fd, old_settings, tasks[selected]["id"], interval)
                     if msg:
                         set_status(msg)
+                    # Full clear after returning from log viewer
+                    sys.stdout.write(_CLEAR_SCREEN)
+                    sys.stdout.flush()
 
             elif key == "refresh":
                 set_status("Refreshed")
