@@ -65,6 +65,7 @@ Search order (first found wins):
 | Field | Type | Default | Description |
 |---|---|---|---|
 | `idle_timeout_minutes` | int | `120` | Codespace idle timeout to set when a task starts. Only applied if the current timeout is lower. Capped by org policy. |
+| `idle_timeout_enabled` | bool | `true` | Set to `false` to skip idle timeout extension entirely. Useful for repos where you don't want tasks to keep Codespaces alive longer. |
 | `keepalive_enabled` | bool | `false` | Enable a background heartbeat thread as a fallback if the idle timeout API doesn't work. |
 | `keepalive_interval_seconds` | int | `300` | Heartbeat interval when keepalive is enabled. |
 
