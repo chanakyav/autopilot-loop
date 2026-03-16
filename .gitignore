@@ -31,5 +31,10 @@ htmlcov/
 .DS_Store
 Thumbs.db
 
+# Environment
+.env
+.env.*
+
 # Project-specific
 *.db
+plan.md

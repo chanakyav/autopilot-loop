@@ -9,12 +9,11 @@ Headless orchestrator that automates the Copilot **implement → review → fix*
 ## Quick Start
 
 ```bash
-# In your github/github codespace:
-pip install git+https://${GITHUB_TOKEN}@github.com/chanakyav/autopilot-loop.git
+# Install
+pip install git+https://github.com/chanakyav/autopilot-loop.git
 
-# Start a task
-cd /workspaces/github
-autopilot start --prompt "Refactor SecurityConfiguration: extract billing transitions into a concern"
+# Start a task (from your repo's Codespace)
+autopilot start --prompt "Refactor UserService: extract billing logic into a concern"
 
 # Check progress (from any terminal)
 autopilot status
@@ -67,7 +66,7 @@ Create `autopilot.json` in your repo root or `~/.autopilot-loop/config.json`:
   "agent_timeout_seconds": 1800,
   "idle_timeout_minutes": 120,
   "branch_pattern": "autopilot/{task_id}",
-  "custom_instructions": "This is the github/github Rails monolith.\nRun tests with: bin/rails test <path>"
+  "custom_instructions": "Run tests with: bin/rails test <path>\nRun linting with: bin/rubocop <path>"
 }
 ```
 
@@ -76,7 +75,7 @@ All values have sensible defaults — config file is optional.
 ## Prerequisites
 
 - **GitHub Codespace** with `copilot` CLI and `gh` CLI installed
-- **tmux** (pre-installed in github/github Codespaces)
+- **tmux** (pre-installed in most Codespaces; `apt install tmux` elsewhere)
 - **Python 3.8+**
 
 Codespace idle timeout is set automatically at startup (120 min, org-capped).
@@ -84,7 +83,7 @@ Codespace idle timeout is set automatically at startup (120 min, org-capped).
 ## Local Development
 
 ```bash
-git clone git@github.com:chanakyav/autopilot-loop.git
+git clone https://github.com/chanakyav/autopilot-loop.git
 cd autopilot-loop
 python3 -m venv .venv && source .venv/bin/activate
 pip install -e ".[dev]"

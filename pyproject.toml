@@ -10,7 +10,7 @@ readme = "README.md"
 license = {file = "LICENSE"}
 requires-python = ">=3.8"
 authors = [
-    { name = "Chanakya Valluri", email = "chanakyav@github.com" },
+    { name = "Chanakya Valluri" },
 ]
 keywords = ["copilot", "automation", "code-review", "github", "codespaces"]
 classifiers = [

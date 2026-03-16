@@ -62,7 +62,7 @@ def get_repo_nwo():
     """Get the current repo's owner/name (nameWithOwner).
 
     Returns:
-        String like 'github/github'.
+        String like 'owner/repo'.
     """
     return _run_gh(["repo", "view", "--json", "nameWithOwner", "--jq", ".nameWithOwner"])
 

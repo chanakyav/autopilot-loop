@@ -25,8 +25,8 @@ def _mock_run(stdout="", returncode=0, stderr=""):
 
 class TestGetRepoNwo:
     def test_returns_nwo(self):
-        with patch("autopilot_loop.github_api.subprocess.run", return_value=_mock_run("github/github")):
-            assert get_repo_nwo() == "github/github"
+        with patch("autopilot_loop.github_api.subprocess.run", return_value=_mock_run("octocat/hello-world")):
+            assert get_repo_nwo() == "octocat/hello-world"
 
 
 class TestFindPrForBranch:
@@ -47,7 +47,7 @@ class TestRequestCopilotReview:
     def test_api_success(self):
         with patch("autopilot_loop.github_api._run_gh") as mock_gh:
             mock_gh.side_effect = [
-                "github/github",  # get_repo_nwo
+                "octocat/hello-world",  # get_repo_nwo
                 "",  # API call
             ]
             request_copilot_review(42)
@@ -61,7 +61,7 @@ class TestGetCopilotReview:
         review_data = {"id": 123, "body": "## Overview", "state": "COMMENTED"}
         with patch("autopilot_loop.github_api._run_gh") as mock_gh:
             mock_gh.side_effect = [
-                "github/github",
+                "octocat/hello-world",
                 json.dumps(review_data),
             ]
             result = get_copilot_review(42)
@@ -70,7 +70,7 @@ class TestGetCopilotReview:
     def test_not_found(self):
         with patch("autopilot_loop.github_api._run_gh") as mock_gh:
             mock_gh.side_effect = [
-                "github/github",
+                "octocat/hello-world",
                 "null",
             ]
             assert get_copilot_review(42) is None
@@ -83,7 +83,7 @@ class TestGetCopilotInlineComments:
         ]
         with patch("autopilot_loop.github_api._run_gh") as mock_gh:
             mock_gh.side_effect = [
-                "github/github",
+                "octocat/hello-world",
                 json.dumps(comments),
             ]
             result = get_copilot_inline_comments(42)
@@ -93,7 +93,7 @@ class TestGetCopilotInlineComments:
     def test_empty(self):
         with patch("autopilot_loop.github_api._run_gh") as mock_gh:
             mock_gh.side_effect = [
-                "github/github",
+                "octocat/hello-world",
                 "[]",
             ]
             assert get_copilot_inline_comments(42) == []
