@@ -96,7 +96,7 @@ def _launch_in_tmux(task_id, mode="review", branch=None, pr_number=None):
     print()
     print("  autopilot status              — check progress")
     print("  autopilot logs --session %s  — view logs" % task_id)
-    print("  tmux attach -t %s     — attach to session" % tmux_session)
+    print("  autopilot attach %s          — attach to session" % task_id)
     print("  autopilot stop %s            — stop task" % task_id)
 
 
