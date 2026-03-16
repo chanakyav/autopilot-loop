@@ -8,7 +8,10 @@ import pytest
 import autopilot_loop.github_api as github_api_module
 from autopilot_loop.github_api import (
     find_pr_for_branch,
+    get_check_annotations,
+    get_check_states,
     get_copilot_review,
+    get_failed_checks,
     get_issue,
     get_repo_nwo,
     get_unresolved_review_comments,
@@ -251,3 +254,97 @@ class TestVerifyNewCommits:
     def test_error_returns_false(self, mock_sha):
         mock_sha.return_value = None
         assert verify_new_commits("branch", "sha") is False
+
+
+class TestGetFailedChecks:
+    def test_returns_failed_non_results(self):
+        checks_json = json.dumps([
+            {"name": "github (4) / github-4", "state": "FAILURE",
+             "link": "https://github.com/o/r/actions/runs/111/job/222"},
+            {"name": "github-results", "state": "FAILURE", "link": ""},
+            {"name": "build-ubuntu (7) / build-ubuntu-7", "state": "FAILURE",
+             "link": "https://github.com/o/r/actions/runs/111/job/333"},
+        ])
+        with patch("autopilot_loop.github_api.subprocess.run", return_value=_mock_run(checks_json)):
+            result = get_failed_checks(42)
+        # Should exclude *-results
+        assert len(result) == 2
+        assert result[0]["name"] == "github (4) / github-4"
+        assert result[0]["run_id"] == 111
+        assert result[0]["job_id"] == 222
+        assert result[1]["job_id"] == 333
+
+    def test_empty_when_no_failures(self):
+        with patch("autopilot_loop.github_api.subprocess.run", return_value=_mock_run("")):
+            assert get_failed_checks(42) == []
+
+    def test_handles_missing_link(self):
+        checks_json = json.dumps([
+            {"name": "custom-check", "state": "FAILURE", "link": "https://example.com/other"},
+        ])
+        with patch("autopilot_loop.github_api.subprocess.run", return_value=_mock_run(checks_json)):
+            result = get_failed_checks(42)
+        assert len(result) == 1
+        assert result[0]["run_id"] is None
+        assert result[0]["job_id"] is None
+
+
+class TestGetCheckAnnotations:
+    def test_returns_failure_annotations_deduped(self):
+        ann1 = json.dumps([
+            {"annotation_level": "failure", "path": "test/a.rb", "start_line": 40,
+             "end_line": 40, "title": "Test failure", "message": "Expected true got false"},
+            {"annotation_level": "warning", "path": ".github", "start_line": 1,
+             "title": "Deprecation", "message": "Node 20 deprecated"},
+            {"annotation_level": "failure", "path": ".github", "start_line": 9999,
+             "title": "", "message": "Process completed with exit code 1."},
+        ])
+        ann2 = json.dumps([
+            # Duplicate of the first annotation (same path + line)
+            {"annotation_level": "failure", "path": "test/a.rb", "start_line": 40,
+             "end_line": 40, "title": "Test failure", "message": "Expected true got false"},
+            {"annotation_level": "failure", "path": "test/b.rb", "start_line": 10,
+             "end_line": 10, "title": "Another failure", "message": "Missing method"},
+        ])
+        with patch("autopilot_loop.github_api._run_gh") as mock_gh:
+            mock_gh.side_effect = [
+                "octocat/hello-world",  # get_repo_nwo (cached after first)
+                ann1,
+                ann2,
+            ]
+            result = get_check_annotations([100, 200])
+        #  Expect 2: a.rb:40 (deduped), b.rb:10. Skipped: warning, "Process completed"
+        assert len(result) == 2
+        assert result[0]["path"] == "test/a.rb"
+        assert result[1]["path"] == "test/b.rb"
+
+    def test_strips_ansi(self):
+        ann = json.dumps([
+            {"annotation_level": "failure", "path": "test/x.rb", "start_line": 1,
+             "end_line": 1, "title": "\x1b[31mRed title\x1b[0m",
+             "message": "\x1b[49;31mcolored\x1b[0m text"},
+        ])
+        with patch("autopilot_loop.github_api._run_gh") as mock_gh:
+            mock_gh.side_effect = ["octocat/hello-world", ann]
+            result = get_check_annotations([100])
+        assert result[0]["title"] == "Red title"
+        assert result[0]["message"] == "colored text"
+
+    def test_empty_when_no_annotations(self):
+        with patch("autopilot_loop.github_api._run_gh") as mock_gh:
+            mock_gh.side_effect = ["octocat/hello-world", ""]
+            assert get_check_annotations([100]) == []
+
+
+class TestGetCheckStates:
+    def test_returns_states_for_selected(self):
+        checks_json = json.dumps([
+            {"name": "check-a", "state": "SUCCESS"},
+            {"name": "check-b", "state": "FAILURE"},
+            {"name": "check-c", "state": "PENDING"},
+        ])
+        with patch("autopilot_loop.github_api.subprocess.run", return_value=_mock_run(checks_json)):
+            result = get_check_states(42, ["check-a", "check-b", "check-d"])
+        assert result["check-a"] == "SUCCESS"
+        assert result["check-b"] == "FAILURE"
+        assert result["check-d"] == "UNKNOWN"

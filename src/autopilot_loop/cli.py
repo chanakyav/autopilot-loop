@@ -4,6 +4,7 @@ Subcommands: start, resume, status, logs, stop, _run (internal).
 """
 
 import argparse
+import json
 import logging
 import os
 import subprocess
@@ -112,8 +113,6 @@ def cmd_start(args):
 
 def cmd_run(args):
     """Internal: run the orchestrator for a task (called from tmux)."""
-    from autopilot_loop.orchestrator import Orchestrator
-
     task = get_task(args.task_id)
     if not task:
         print("Error: task %s not found" % args.task_id, file=sys.stderr)
@@ -128,7 +127,15 @@ def cmd_run(args):
     file_handler.setFormatter(logging.Formatter("%(asctime)s [%(levelname)s] %(message)s"))
     logging.getLogger().addHandler(file_handler)
 
-    orch = Orchestrator(task_id=args.task_id, config=config)
+    # Dispatch to the right orchestrator based on task mode
+    task_mode = task.get("task_mode", "review")
+    if task_mode == "ci":
+        from autopilot_loop.orchestrator import CIOrchestrator
+        orch = CIOrchestrator(task_id=args.task_id, config=config)
+    else:
+        from autopilot_loop.orchestrator import Orchestrator
+        orch = Orchestrator(task_id=args.task_id, config=config)
+
     result = orch.run()
 
     if result.get("state") == "COMPLETE":
@@ -253,6 +260,123 @@ def cmd_logs(args):
                     print("  %s" % name)
 
 
+def cmd_fix_ci(args):
+    """Fix CI failures on an existing PR."""
+    from autopilot_loop.github_api import get_failed_checks
+
+    config = load_config({
+        "model": args.model,
+        "max_iterations": args.max_iters,
+    })
+
+    # Validate PR exists and get branch
+    try:
+        result = subprocess.run(
+            ["gh", "pr", "view", str(args.pr), "--json", "headRefName", "--jq", ".headRefName"],
+            capture_output=True, text=True, check=True,
+        )
+        branch = result.stdout.strip()
+        subprocess.run(["git", "checkout", branch], check=True)
+    except subprocess.CalledProcessError as e:
+        print("Error: could not fetch PR #%d: %s" % (args.pr, e), file=sys.stderr)
+        sys.exit(1)
+
+    # Get failed checks
+    failed_checks = get_failed_checks(args.pr)
+    if not failed_checks:
+        print("No failed CI checks found on PR #%d" % args.pr)
+        return
+
+    # Determine which checks to fix
+    if args.checks:
+        # Non-interactive: substring match
+        patterns = [p.strip() for p in args.checks.split(",")]
+        selected = [c for c in failed_checks if any(p in c["name"] for p in patterns)]
+        if not selected:
+            print("No failed checks matched: %s" % args.checks, file=sys.stderr)
+            print("Available failed checks:")
+            for c in failed_checks:
+                print("  %s" % c["name"])
+            sys.exit(1)
+    elif config.get("ci_check_names"):
+        # Pre-configured in config
+        patterns = config["ci_check_names"]
+        selected = [c for c in failed_checks if any(p in c["name"] for p in patterns)]
+        if not selected:
+            print("No failed checks matched ci_check_names config: %s" % patterns, file=sys.stderr)
+            sys.exit(1)
+    else:
+        # Interactive: list and prompt
+        print("Failed CI checks on PR #%d:" % args.pr)
+        print()
+        for i, c in enumerate(failed_checks, 1):
+            print("  %d. %s" % (i, c["name"]))
+        print()
+
+        try:
+            selection = input("Which checks to fix? (comma-separated numbers, or 'all'): ").strip()
+        except (EOFError, KeyboardInterrupt):
+            print("\nAborted.")
+            sys.exit(1)
+
+        if selection.lower() == "all":
+            selected = list(failed_checks)
+        else:
+            try:
+                indices = [int(s.strip()) for s in selection.split(",")]
+                selected = [failed_checks[i - 1] for i in indices if 1 <= i <= len(failed_checks)]
+            except (ValueError, IndexError):
+                print("Error: invalid selection", file=sys.stderr)
+                sys.exit(1)
+
+        if not selected:
+            print("No checks selected.")
+            return
+
+    check_names = [c["name"] for c in selected]
+    print("\u2713 Selected %d checks:" % len(selected))
+    for name in check_names:
+        print("  \u2022 %s" % name)
+
+    task_id = _generate_task_id()
+    from autopilot_loop.persistence import update_task
+
+    create_task(
+        task_id=task_id,
+        prompt="(fix-ci for PR #%d)" % args.pr,
+        max_iterations=config["max_iterations"],
+        model=config["model"],
+    )
+    update_task(
+        task_id,
+        pr_number=args.pr,
+        branch=branch,
+        state="FETCH_ANNOTATIONS",
+        task_mode="ci",
+        ci_check_names=json.dumps(check_names),
+    )
+
+    # Launch in tmux
+    sessions_dir = get_sessions_dir(task_id)
+    log_file = os.path.join(sessions_dir, "orchestrator.log")
+    tmux_session = "autopilot-%s" % task_id
+    run_cmd = "autopilot _run --task-id %s 2>&1 | tee -a %s" % (task_id, log_file)
+
+    try:
+        subprocess.run(
+            ["tmux", "new-session", "-d", "-s", tmux_session, run_cmd],
+            check=True,
+        )
+    except FileNotFoundError:
+        logger.warning("tmux not found, running in foreground")
+        cmd_run(argparse.Namespace(task_id=task_id))
+        return
+
+    print("\u2713 Fixing CI on PR #%d as task %s" % (args.pr, task_id))
+    print("\u2713 Branch: %s" % branch)
+    print("\u2713 Running in tmux session: %s" % tmux_session)
+
+
 def cmd_stop(args):
     """Stop a running task."""
     task_id = args.task_id
@@ -309,6 +433,13 @@ def main():
     p_stop = subparsers.add_parser("stop", help="Stop a running task")
     p_stop.add_argument("task_id", type=str, help="Task ID to stop")
 
+    # fix-ci
+    p_fixci = subparsers.add_parser("fix-ci", help="Fix CI failures on an existing PR")
+    p_fixci.add_argument("--pr", type=int, required=True, help="PR number")
+    p_fixci.add_argument("--checks", type=str, help="Comma-separated check names (substring match)")
+    p_fixci.add_argument("--max-iters", type=int, help="Max fix iterations")
+    p_fixci.add_argument("--model", type=str, help="Model override")
+
     # _run (internal, called from tmux)
     p_run = subparsers.add_parser("_run", help=argparse.SUPPRESS)
     p_run.add_argument("--task-id", required=True, help=argparse.SUPPRESS)
@@ -326,6 +457,8 @@ def main():
         cmd_logs(args)
     elif args.command == "stop":
         cmd_stop(args)
+    elif args.command == "fix-ci":
+        cmd_fix_ci(args)
     elif args.command == "_run":
         cmd_run(args)
     else:

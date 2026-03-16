@@ -6,7 +6,7 @@ import pytest
 
 from autopilot_loop import persistence
 from autopilot_loop.agent import AgentResult
-from autopilot_loop.orchestrator import Orchestrator
+from autopilot_loop.orchestrator import CIOrchestrator, Orchestrator
 
 
 @pytest.fixture(autouse=True)
@@ -380,3 +380,173 @@ class TestOrchestratorVerifyPush:
         orch._pre_fix_sha = "same_sha"
         orch._retry_counts["VERIFY_PUSH_FIX_RETRY"] = 1  # Already retried
         assert orch._do_verify_push() == "FAILED"
+
+
+def _create_ci_task(task_id="ci1", check_names=None):
+    import json as _json
+    if check_names is None:
+        check_names = ["build-and-test-7"]
+    persistence.create_task(task_id, "(fix-ci)", max_iterations=3, model="test-model")
+    persistence.update_task(
+        task_id,
+        branch="autopilot/%s" % task_id,
+        pr_number=42,
+        state="FETCH_ANNOTATIONS",
+        task_mode="ci",
+        ci_check_names=_json.dumps(check_names),
+    )
+    return task_id
+
+
+class TestCIOrchestratorFetchAnnotations:
+    @patch("autopilot_loop.orchestrator.get_check_annotations")
+    @patch("autopilot_loop.orchestrator.get_failed_checks")
+    def test_annotations_found_transitions_to_fix(self, mock_failed, mock_ann, config):
+        mock_failed.return_value = [
+            {"name": "build-and-test-7", "job_id": 100, "run_id": 1, "link": ""},
+        ]
+        mock_ann.return_value = [
+            {"path": "test/a.rb", "start_line": 40, "end_line": 40,
+             "title": "Test failure", "message": "assert failed"},
+        ]
+        task_id = _create_ci_task()
+        orch = CIOrchestrator(task_id, config)
+        orch.task = persistence.get_task(task_id)
+        assert orch._do_fetch_annotations() == "FIX_CI"
+
+    @patch("autopilot_loop.orchestrator.get_check_annotations")
+    @patch("autopilot_loop.orchestrator.get_failed_checks")
+    def test_no_annotations_completes(self, mock_failed, mock_ann, config):
+        mock_failed.return_value = [
+            {"name": "build-and-test-7", "job_id": 100, "run_id": 1, "link": ""},
+        ]
+        mock_ann.return_value = []
+        task_id = _create_ci_task()
+        orch = CIOrchestrator(task_id, config)
+        orch.task = persistence.get_task(task_id)
+        assert orch._do_fetch_annotations() == "COMPLETE"
+
+    @patch("autopilot_loop.orchestrator.get_check_states")
+    @patch("autopilot_loop.orchestrator.get_failed_checks")
+    def test_checks_now_passing_completes(self, mock_failed, mock_states, config):
+        mock_failed.return_value = []  # No longer failing
+        mock_states.return_value = {"build-and-test-7": "SUCCESS"}
+        task_id = _create_ci_task()
+        orch = CIOrchestrator(task_id, config)
+        orch.task = persistence.get_task(task_id)
+        assert orch._do_fetch_annotations() == "COMPLETE"
+
+    @patch("autopilot_loop.orchestrator.get_check_annotations")
+    @patch("autopilot_loop.orchestrator.get_failed_checks")
+    def test_max_iterations_completes(self, mock_failed, mock_ann, config):
+        mock_failed.return_value = [
+            {"name": "build-and-test-7", "job_id": 100, "run_id": 1, "link": ""},
+        ]
+        mock_ann.return_value = [
+            {"path": "test/a.rb", "start_line": 40, "end_line": 40,
+             "title": "Test failure", "message": "still failing"},
+        ]
+        task_id = _create_ci_task()
+        persistence.update_task(task_id, iteration=3)  # At max
+        orch = CIOrchestrator(task_id, config)
+        orch.task = persistence.get_task(task_id)
+        assert orch._do_fetch_annotations() == "COMPLETE"
+
+
+class TestCIOrchestratorFixCI:
+    @patch("autopilot_loop.orchestrator.get_head_sha")
+    @patch("autopilot_loop.orchestrator.run_agent")
+    def test_fix_ci_success(self, mock_run, mock_sha, config):
+        mock_run.return_value = _mock_agent_result()
+        mock_sha.return_value = "abc123"
+        task_id = _create_ci_task()
+        orch = CIOrchestrator(task_id, config)
+        orch.task = persistence.get_task(task_id)
+        orch._current_annotations = [
+            {"path": "test/a.rb", "start_line": 40, "title": "fail", "message": "msg"},
+        ]
+        assert orch._do_fix_ci() == "VERIFY_PUSH"
+
+
+class TestCIOrchestratorWaitCI:
+    @patch("autopilot_loop.orchestrator.get_check_states")
+    def test_all_checks_pass(self, mock_states, config):
+        mock_states.return_value = {"build-and-test-7": "SUCCESS"}
+        task_id = _create_ci_task()
+        orch = CIOrchestrator(task_id, config)
+        orch.task = persistence.get_task(task_id)
+        assert orch._do_wait_ci() == "COMPLETE"
+
+    @patch("autopilot_loop.orchestrator.get_check_states")
+    def test_checks_still_failing(self, mock_states, config):
+        mock_states.return_value = {"build-and-test-7": "FAILURE"}
+        task_id = _create_ci_task()
+        orch = CIOrchestrator(task_id, config)
+        orch.task = persistence.get_task(task_id)
+        assert orch._do_wait_ci() == "FETCH_ANNOTATIONS"
+
+    @patch("autopilot_loop.orchestrator.time.sleep")
+    @patch("autopilot_loop.orchestrator.get_check_states")
+    def test_timeout_completes(self, mock_states, mock_sleep, config):
+        mock_states.return_value = {"build-and-test-7": "PENDING"}
+        config["ci_poll_timeout_seconds"] = 0  # Immediate timeout
+        task_id = _create_ci_task()
+        orch = CIOrchestrator(task_id, config)
+        orch.task = persistence.get_task(task_id)
+        assert orch._do_wait_ci() == "COMPLETE"
+
+
+class TestCIOrchestratorVerifyPush:
+    @patch("autopilot_loop.orchestrator.get_head_sha")
+    @patch("autopilot_loop.orchestrator.verify_new_commits")
+    def test_goes_to_wait_ci(self, mock_verify, mock_sha, config):
+        """CIOrchestrator VERIFY_PUSH transitions to WAIT_CI (not RESOLVE_COMMENTS)."""
+        mock_verify.return_value = True
+        task_id = _create_ci_task()
+        orch = CIOrchestrator(task_id, config)
+        orch.task = persistence.get_task(task_id)
+        orch._pre_fix_sha = "old_sha"
+        assert orch._do_verify_push() == "WAIT_CI"
+
+    @patch("autopilot_loop.orchestrator.get_head_sha")
+    @patch("autopilot_loop.orchestrator.verify_new_commits")
+    def test_no_commits_retries_fix_ci(self, mock_verify, mock_sha, config):
+        """CIOrchestrator VERIFY_PUSH retries FIX_CI (not FIX)."""
+        mock_verify.return_value = False
+        mock_sha.return_value = "same"
+        task_id = _create_ci_task()
+        orch = CIOrchestrator(task_id, config)
+        orch.task = persistence.get_task(task_id)
+        orch._pre_fix_sha = "same"
+        assert orch._do_verify_push() == "FIX_CI"
+
+
+class TestCIOrchestratorFullLoop:
+    @patch("autopilot_loop.orchestrator.set_idle_timeout")
+    @patch("autopilot_loop.orchestrator.get_check_states")
+    @patch("autopilot_loop.orchestrator.verify_new_commits")
+    @patch("autopilot_loop.orchestrator.get_head_sha")
+    @patch("autopilot_loop.orchestrator.run_agent")
+    @patch("autopilot_loop.orchestrator.get_check_annotations")
+    @patch("autopilot_loop.orchestrator.get_failed_checks")
+    def test_fix_then_pass(
+        self, mock_failed, mock_ann, mock_run, mock_sha, mock_verify,
+        mock_states, mock_timeout, config,
+    ):
+        """Full CI loop: fetch annotations → fix → verify push → wait CI → COMPLETE."""
+        mock_failed.return_value = [
+            {"name": "build-and-test-7", "job_id": 100, "run_id": 1, "link": ""},
+        ]
+        mock_ann.return_value = [
+            {"path": "test/a.rb", "start_line": 40, "end_line": 40,
+             "title": "Test failure", "message": "assert failed"},
+        ]
+        mock_run.return_value = _mock_agent_result()
+        mock_sha.return_value = "sha1"
+        mock_verify.return_value = True
+        mock_states.return_value = {"build-and-test-7": "SUCCESS"}
+
+        task_id = _create_ci_task()
+        orch = CIOrchestrator(task_id, config)
+        result = orch.run()
+        assert result["state"] == "COMPLETE"
