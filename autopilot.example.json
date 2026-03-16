@@ -1,0 +1,14 @@
+{
+  "model": "claude-opus-4.6",
+  "max_iterations": 5,
+  "max_retries_per_phase": 1,
+  "reviewer": "Copilot",
+  "review_poll_interval_seconds": 60,
+  "review_timeout_seconds": 3600,
+  "agent_timeout_seconds": 1800,
+  "idle_timeout_minutes": 120,
+  "keepalive_enabled": false,
+  "keepalive_interval_seconds": 300,
+  "branch_pattern": "autopilot/{task_id}",
+  "custom_instructions": ""
+}
