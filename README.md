@@ -70,17 +70,17 @@ autopilot next                            # Jump to next session needing attenti
 Full-screen TUI with animated spinners, detail panel, and built-in log viewer:
 
 ```
-┏━ autopilot-loop — Sessions (3) ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓
-┃                                                                              ┃
+┏━ autopilot-loop — Sessions (3) ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓
+┃                                                                               ┃
 ┃   #   Task ID    Mode     Branch                  State          PR    Iter   ┃
-┃                                                                              ┃
-┃   ► 1  a1b2c3d4  review   autopilot/a1b2c3d4     ⠹ IMPLEMENT    -     0/5   ┃
-┃                                                                              ┃
-┃     2  e5f6g7h8  ci       autopilot/e5f6g7h8     ◐ WAIT_CI      #43   1/5   ┃
-┃                                                                              ┃
-┃     3  i9j0k1l2  review   autopilot/i9j0k1l2     ■ STOPPED      #44   3/5   ┃
-┃                                                                              ┃
-┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛
+┃                                                                               ┃
+┃   ► 1  a1b2c3d4  review   autopilot/a1b2c3d4      ⠹ IMPLEMENT    -     0/5    ┃
+┃                                                                               ┃
+┃     2  e5f6g7h8  ci       autopilot/e5f6g7h8      ◐ WAIT_CI      #43   1/5    ┃
+┃                                                                               ┃
+┃     3  i9j0k1l2  review   autopilot/i9j0k1l2      ■ STOPPED      #44   3/5    ┃
+┃                                                                               ┃
+┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛
  j/k navigate  Enter attach  x stop  l logs  d detail  r refresh  q quit
 ```
 
