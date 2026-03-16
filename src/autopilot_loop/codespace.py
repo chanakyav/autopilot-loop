@@ -1,6 +1,5 @@
 """Codespace idle timeout management via gh api."""
 
-import json
 import logging
 import os
 import subprocess

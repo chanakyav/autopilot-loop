@@ -449,8 +449,6 @@ def cmd_restart(args):
               file=sys.stderr)
         sys.exit(1)
 
-    config = load_config({"model": task["model"]})
-
     # Determine the phase to restart from. For states that are mid-action
     # (e.g. FIX, IMPLEMENT), restart from the beginning of that phase.
     # For waiting states, restart from the state that triggered the wait.

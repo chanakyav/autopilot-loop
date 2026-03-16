@@ -6,7 +6,7 @@ import pytest
 
 from autopilot_loop import persistence
 from autopilot_loop.agent import AgentResult
-from autopilot_loop.orchestrator import CIOrchestrator, Orchestrator, TERMINAL_STATES
+from autopilot_loop.orchestrator import TERMINAL_STATES, CIOrchestrator, Orchestrator
 
 
 @pytest.fixture(autouse=True)
