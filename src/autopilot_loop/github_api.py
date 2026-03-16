@@ -253,6 +253,14 @@ def get_unresolved_review_comments(pr_number):
         return []
 
     data = json.loads(output)
+
+    # Check for GraphQL errors
+    if "errors" in data:
+        msgs = [e.get("message", str(e)) for e in data["errors"]]
+        logger.warning("GraphQL errors in get_unresolved_review_comments: %s", "; ".join(msgs))
+        if not data.get("data"):
+            return []
+
     threads = (
         data.get("data", {})
         .get("repository", {})

@@ -123,12 +123,18 @@ def run_agent(prompt, session_dir, model="claude-opus-4.6", timeout=1800, extra_
         proc.wait(timeout=timeout)
     except subprocess.TimeoutExpired:
         logger.warning("Agent timed out after %ds, sending SIGTERM", timeout)
-        os.killpg(os.getpgid(proc.pid), signal.SIGTERM)
+        try:
+            os.killpg(os.getpgid(proc.pid), signal.SIGTERM)
+        except (OSError, ProcessLookupError):
+            pass
         try:
             proc.wait(timeout=30)
         except subprocess.TimeoutExpired:
             logger.warning("Agent still running after SIGTERM grace period, sending SIGKILL")
-            os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+            try:
+                os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+            except (OSError, ProcessLookupError):
+                pass
             proc.wait()
 
     # Wait for streaming threads to finish reading

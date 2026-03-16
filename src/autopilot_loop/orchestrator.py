@@ -30,6 +30,7 @@ from autopilot_loop.github_api import (
     verify_new_commits,
 )
 from autopilot_loop.persistence import (
+    TERMINAL_STATES,
     get_sessions_dir,
     get_task,
     save_agent_run,
@@ -67,8 +68,7 @@ STATES = [
     "STOPPED",
 ]
 
-# Terminal states — the orchestrator stops when reaching any of these
-TERMINAL_STATES = frozenset({"COMPLETE", "FAILED", "STOPPED"})
+# Re-export from persistence (canonical definition lives there to avoid circular imports)
 
 
 class BaseOrchestrator:
