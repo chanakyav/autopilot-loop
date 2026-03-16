@@ -452,17 +452,18 @@ class Orchestrator:
             message = summary.get("message", "")
 
             # Build reply
+            PREFIX = "\U0001f916 **autopilot-loop**" # Robot emoji for clarity in PR comments
             if status == "skipped":
                 reply_body = (
-                    "\xf0\x9f\xa4\x96 **autopilot-loop**: Skipped \u2014 %s" % message
+                    "%s: Skipped \u2014 %s" % (PREFIX, message)
                     if message
-                    else "\xf0\x9f\xa4\x96 **autopilot-loop**: Skipped \u2014 determined not worth addressing"
+                    else "%s: Skipped \u2014 determined not worth addressing" % PREFIX
                 )
             else:
                 reply_body = (
-                    "\xf0\x9f\xa4\x96 **autopilot-loop**: Addressed in %s \u2014 %s" % (short_sha, message)
+                    "%s: Addressed in %s \u2014 %s" % (PREFIX, short_sha, message)
                     if message
-                    else "\xf0\x9f\xa4\x96 **autopilot-loop**: Addressed in %s" % short_sha
+                    else "%s: Addressed in %s" % (PREFIX, short_sha)
                 )
 
             try:
