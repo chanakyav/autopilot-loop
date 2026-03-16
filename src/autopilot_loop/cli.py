@@ -7,12 +7,14 @@ import argparse
 import json
 import logging
 import os
+import re
 import subprocess
 import sys
 import uuid
 
 from autopilot_loop.config import load_config
 from autopilot_loop.persistence import (
+    TERMINAL_STATES,
     create_task,
     get_active_tasks,
     get_sessions_dir,
@@ -37,6 +39,14 @@ def _setup_logging(verbose=False):
 
 def _generate_task_id():
     return uuid.uuid4().hex[:8]
+
+
+def _validate_task_id(task_id):
+    """Validate task ID format (8 hex chars). Exits with error if invalid."""
+    if not re.match(r'^[a-f0-9]{8}$', task_id):
+        print("Error: invalid task ID '%s' (expected 8 hex characters, e.g. a1b2c3d4)" % task_id,
+              file=sys.stderr)
+        sys.exit(1)
 
 
 def _detect_autopilot_branch():
@@ -218,13 +228,22 @@ def cmd_resume(args):
     """Resume a task from an existing PR."""
     config = load_config()
 
-    # Validate PR exists and get branch BEFORE creating any task state
+    # Validate PR exists, is open, and get branch BEFORE creating any task state
     try:
         result = subprocess.run(
-            ["gh", "pr", "view", str(args.pr), "--json", "headRefName", "--jq", ".headRefName"],
+            ["gh", "pr", "view", str(args.pr),
+             "--json", "headRefName,state",
+             "--jq", '[.headRefName, .state] | @tsv'],
             capture_output=True, text=True, check=True,
         )
-        branch = result.stdout.strip()
+        parts = result.stdout.strip().split("\t")
+        branch = parts[0]
+        pr_state = parts[1] if len(parts) > 1 else "UNKNOWN"
+
+        if pr_state != "OPEN":
+            print("Error: PR #%d is %s (must be OPEN to resume)" % (args.pr, pr_state),
+                  file=sys.stderr)
+            sys.exit(1)
 
         # Check out the branch
         subprocess.run(["git", "checkout", branch], check=True)
@@ -274,6 +293,7 @@ def cmd_status(args):
 def cmd_attach(args):
     """Attach to a task's tmux session."""
     task_id = args.task_id
+    _validate_task_id(task_id)
     task = get_task(task_id)
     if not task:
         print("Error: task %s not found" % task_id, file=sys.stderr)
@@ -285,7 +305,10 @@ def cmd_attach(args):
     except subprocess.CalledProcessError:
         # Not inside tmux — try attach instead
         try:
-            os.execvp("tmux", ["tmux", "attach", "-t", tmux_session])
+            result = subprocess.run(["tmux", "attach", "-t", tmux_session])
+            if result.returncode != 0:
+                print("Error: could not attach to session %s" % tmux_session, file=sys.stderr)
+                sys.exit(1)
         except FileNotFoundError:
             print("Error: tmux not found", file=sys.stderr)
             sys.exit(1)
@@ -300,13 +323,17 @@ def cmd_next(args):
         for t in tasks:
             if t["state"] == state:
                 tmux_session = "autopilot-%s" % t["id"]
-                print("Switching to task %s (state: %s)" % (t["id"], state))
+                print("✓ Switching to task %s (state: %s)" % (t["id"], state))
                 try:
                     subprocess.run(["tmux", "switch-client", "-t", tmux_session], check=True)
                     return
                 except subprocess.CalledProcessError:
                     try:
-                        os.execvp("tmux", ["tmux", "attach", "-t", tmux_session])
+                        result = subprocess.run(["tmux", "attach", "-t", tmux_session])
+                        if result.returncode != 0:
+                            print("Error: could not attach to session %s" % tmux_session, file=sys.stderr)
+                            sys.exit(1)
+                        return
                     except FileNotFoundError:
                         print("Error: tmux not found", file=sys.stderr)
                         sys.exit(1)
@@ -463,6 +490,7 @@ def cmd_fix_ci(args):
 def cmd_stop(args):
     """Stop a running task."""
     task_id = args.task_id
+    _validate_task_id(task_id)
     tmux_session = "autopilot-%s" % task_id
 
     # Try to kill the tmux session
@@ -477,7 +505,7 @@ def cmd_stop(args):
 
     # Update task state — save the current state before marking STOPPED
     task = get_task(task_id)
-    if task and task["state"] not in ("COMPLETE", "FAILED", "STOPPED"):
+    if task and task["state"] not in TERMINAL_STATES:
         from autopilot_loop.persistence import update_task
         update_task(task_id, pre_stop_state=task["state"], state="STOPPED")
         print("✓ Task %s marked as STOPPED" % task_id)
@@ -486,6 +514,7 @@ def cmd_stop(args):
 def cmd_restart(args):
     """Restart a stopped task from its current phase."""
     task_id = args.task_id
+    _validate_task_id(task_id)
     task = get_task(task_id)
 
     if not task:
@@ -520,10 +549,20 @@ def cmd_restart(args):
                     pr_number=task.get("pr_number"))
 
 
+_BANNER = r"""
+   ___       __              _ __     __     __
+  / _ |__ __/ /____  ___  (_) /__  / /_   / /  ___  ___  ___
+ / __ / // / __/ _ \/ _ \/ / / _ \/ __/  / /__/ _ \/ _ \/ _ \
+/_/ |_\_,_/\__/\___/ .__/_/_/\___/\__/  /____/\___/\___/ .__/
+                  /_/                                  /_/
+"""
+
+
 def main():
     parser = argparse.ArgumentParser(
         prog="autopilot",
-        description="Headless Copilot coding-review-fix orchestrator",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        description=_BANNER + "Headless Copilot coding-review-fix orchestrator",
     )
     parser.add_argument("-v", "--verbose", action="store_true", help="Verbose output")
     subparsers = parser.add_subparsers(dest="command")
@@ -532,10 +571,12 @@ def main():
     p_start = subparsers.add_parser("start", help="Start a new autopilot task")
     p_start.add_argument("--prompt", "-p", type=str, help="Task description")
     p_start.add_argument("--issue", "-i", type=int, help="GitHub issue number")
-    p_start.add_argument("--plan", action="store_true", help="Let agent plan + implement (default: implement only)")
+    p_start.add_argument("--plan", action="store_true",
+                         help="Agent creates a plan first, then implements (default: implement only)")
     p_start.add_argument("--model", type=str, help="Model override")
     p_start.add_argument("--max-iters", type=int, help="Max review-fix iterations")
-    p_start.add_argument("--dry-run", action="store_true", help="Log transitions without running agents")
+    p_start.add_argument("--dry-run", action="store_true",
+                         help="Show what would run without starting agents or tmux")
 
     # resume
     p_resume = subparsers.add_parser("resume", help="Resume from an existing PR")
@@ -545,12 +586,14 @@ def main():
     p_status = subparsers.add_parser("status", help="Show task status")
     p_status.add_argument("--watch", "-w", action="store_true", help="Auto-refresh status display")
     p_status.add_argument("--json", action="store_true", help="Output as JSON")
-    p_status.add_argument("--interval", type=int, default=5, help="Refresh interval in seconds (with --watch)")
+    p_status.add_argument("--interval", type=int, default=5,
+                           help="Refresh interval in seconds (only with --watch)")
 
     # logs
     p_logs = subparsers.add_parser("logs", help="Show task logs")
     p_logs.add_argument("--session", type=str, help="Task ID")
-    p_logs.add_argument("--phase", type=str, help="Phase name (e.g., fix-1, implement)")
+    p_logs.add_argument("--phase", type=str,
+                        help="Phase name (e.g. implement, fix-1, fix-2, plan)")
 
     # stop
     p_stop = subparsers.add_parser("stop", help="Stop a running task")
@@ -563,7 +606,9 @@ def main():
     # fix-ci
     p_fixci = subparsers.add_parser("fix-ci", help="Fix CI failures on an existing PR")
     p_fixci.add_argument("--pr", type=int, required=True, help="PR number")
-    p_fixci.add_argument("--checks", type=str, help="Comma-separated check names (substring match)")
+    p_fixci.add_argument("--checks", type=str,
+                         help="Comma-separated check names; uses substring match "
+                              "(e.g. 'build' matches 'build-ubuntu')")
     p_fixci.add_argument("--max-iters", type=int, help="Max fix iterations")
     p_fixci.add_argument("--model", type=str, help="Model override")
 

@@ -32,10 +32,13 @@ __all__ = [
     "status_interactive",
 ]
 
+def _make_console():
+    """Create a Rich Console, respecting the NO_COLOR env var."""
+    from rich.console import Console
+    no_color = os.environ.get("NO_COLOR") is not None
+    return Console(no_color=no_color)
 
-# ---------------------------------------------------------------------------
-# Elapsed time formatting
-# ---------------------------------------------------------------------------
+
 
 def _format_elapsed(created_at):
     elapsed = time.time() - created_at
@@ -365,14 +368,12 @@ def _build_status_message(msg):
 
 def status_table():
     """Print a rich table of all tasks (non-interactive)."""
-    from rich.console import Console
-
     tasks = list_tasks()
     if not tasks:
         print("No tasks found.")
         return
 
-    console = Console()
+    console = _make_console()
     table = _build_table("autopilot-loop \u2014 Sessions", tasks)
     console.print(table)
 
@@ -401,10 +402,9 @@ def status_json():
 
 def status_watch(interval=5):
     """Auto-refreshing status display (non-interactive, for piped output)."""
-    from rich.console import Console
     from rich.live import Live
 
-    console = Console()
+    console = _make_console()
 
     def build():
         tasks = list_tasks()
@@ -634,7 +634,7 @@ def _logs_view(fd, old_settings, task_id, interval=2):
     import tty
 
     from rich.box import HEAVY
-    from rich.console import Console, Group
+    from rich.console import Group
     from rich.panel import Panel
     from rich.text import Text
 
@@ -653,7 +653,7 @@ def _logs_view(fd, old_settings, task_id, interval=2):
         # Render in cooked mode
         termios.tcsetattr(fd, termios.TCSADRAIN, old_settings)
 
-        console = Console()
+        console = _make_console()
         max_offset = max(0, len(lines) - console_height)
         visible = styled_lines[scroll_offset:scroll_offset + console_height]
 
@@ -739,7 +739,7 @@ def status_interactive(interval=2):
         status_watch(interval=interval)
         return
 
-    from rich.console import Console, Group
+    from rich.console import Group
 
     fd = sys.stdin.fileno()
     try:
@@ -797,7 +797,7 @@ def status_interactive(interval=2):
             # Render in cooked mode for correct terminal width
             termios.tcsetattr(fd, termios.TCSADRAIN, old_settings)
 
-            console = Console()
+            console = _make_console()
             content, tasks = render_main(console)
             _render_frame(console, content)
 
@@ -808,6 +808,8 @@ def status_interactive(interval=2):
             if key in ("quit", "esc"):
                 if detail_open:
                     detail_open = False
+                    sys.stdout.write(_CLEAR_SCREEN)
+                    sys.stdout.flush()
                 else:
                     break
 
@@ -836,6 +838,8 @@ def status_interactive(interval=2):
 
             elif key == "detail":
                 detail_open = not detail_open
+                sys.stdout.write(_CLEAR_SCREEN)
+                sys.stdout.flush()
 
             elif key == "logs":
                 tasks = list_tasks()
@@ -843,6 +847,9 @@ def status_interactive(interval=2):
                     msg = _logs_view(fd, old_settings, tasks[selected]["id"], interval)
                     if msg:
                         set_status(msg)
+                    # Full clear after returning from log viewer
+                    sys.stdout.write(_CLEAR_SCREEN)
+                    sys.stdout.flush()
 
             elif key == "refresh":
                 set_status("Refreshed")

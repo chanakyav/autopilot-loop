@@ -11,7 +11,15 @@ import time
 
 logger = logging.getLogger(__name__)
 
+# Terminal states — shared constant to avoid hardcoding in SQL queries.
+# Defined here (not in orchestrator) to avoid circular imports.
+TERMINAL_STATES = frozenset({"COMPLETE", "FAILED", "STOPPED"})
+
+# SQL fragment for filtering out terminal states, built from the constant.
+_TERMINAL_STATES_SQL = "(%s)" % ", ".join("'%s'" % s for s in sorted(TERMINAL_STATES))
+
 __all__ = [
+    "TERMINAL_STATES",
     "create_task",
     "get_task",
     "update_task",
@@ -228,8 +236,8 @@ def get_active_tasks():
     conn = _get_db()
     try:
         rows = conn.execute(
-            "SELECT * FROM tasks WHERE state NOT IN ('COMPLETE', 'FAILED', 'STOPPED') "
-            "ORDER BY created_at DESC"
+            "SELECT * FROM tasks WHERE state NOT IN %s "
+            "ORDER BY created_at DESC" % _TERMINAL_STATES_SQL
         ).fetchall()
         return [dict(r) for r in rows]
     finally:
@@ -241,7 +249,7 @@ def get_tasks_on_branch(branch):
     conn = _get_db()
     try:
         rows = conn.execute(
-            "SELECT * FROM tasks WHERE branch = ? AND state NOT IN ('COMPLETE', 'FAILED', 'STOPPED')",
+            "SELECT * FROM tasks WHERE branch = ? AND state NOT IN %s" % _TERMINAL_STATES_SQL,
             (branch,)
         ).fetchall()
         return [dict(r) for r in rows]

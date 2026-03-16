@@ -12,10 +12,11 @@
 - **Python 3.8+ compatible** — no walrus operator, no `str.removeprefix`, use `% formatting` not f-strings
 - **CLI output uses `_launch_in_tmux()`** — all commands that start tmux sessions go through this shared helper; never duplicate tmux launch logic inline
 - **Dashboard rendering lives in `dashboard.py`** — not in `cli.py`
-- **TUI actions must be safe** — never `os.execvp` or crash out of the TUI; catch all errors and show a status message instead
+- **Never use `os.execvp`** — use `subprocess.run` instead; `os.execvp` replaces the process and breaks callers, scripts, and error handling
+- **TUI actions must be safe** — catch all errors and show a status message instead of crashing
 - **TUI uses alternate screen buffer** — `_enter_tui()` / `_exit_tui()` in dashboard.py; always restore terminal in a `finally` block
 - **Persistence changes need schema migration** — bump `SCHEMA_VERSION`, add to `_MIGRATIONS` list, add column to `SCHEMA`, add to `_TASK_COLUMNS` frozenset
-- **Terminal states are `COMPLETE`, `FAILED`, `STOPPED`** — use `TERMINAL_STATES` from orchestrator or `_TERMINAL_STATES` from dashboard, not hardcoded tuples
+- **Terminal states are `COMPLETE`, `FAILED`, `STOPPED`** — use `TERMINAL_STATES` from persistence (canonical source) or `_TERMINAL_STATES` from dashboard, not hardcoded tuples
 - **Branch locking** — `get_tasks_on_branch()` prevents concurrent tasks on the same branch
 
 ## When Adding a New CLI Command
