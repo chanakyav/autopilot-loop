@@ -293,8 +293,13 @@ def status_interactive(interval=2):
         status_watch(interval=interval)
         return
 
-    import termios
-    import tty
+    try:
+        import termios
+        import tty
+    except ImportError:
+        # Windows or environment without termios — fall back to passive watch
+        status_watch(interval=interval)
+        return
 
     from rich.console import Console, Group
     from rich.live import Live
@@ -304,7 +309,12 @@ def status_interactive(interval=2):
     tick = 0
 
     fd = sys.stdin.fileno()
-    old_settings = termios.tcgetattr(fd)
+    try:
+        old_settings = termios.tcgetattr(fd)
+    except termios.error:
+        # Not a real terminal (e.g. VS Code process terminal) — fall back
+        status_watch(interval=interval)
+        return
 
     def render():
         tasks = list_tasks()
@@ -322,7 +332,7 @@ def status_interactive(interval=2):
         tty.setraw(fd)
         content, tasks = render()
 
-        with Live(content, console=console, screen=True, refresh_per_second=4) as live:
+        with Live(content, console=console, screen=False, refresh_per_second=4) as live:
             while True:
                 key = _read_key(fd, timeout=interval)
 
