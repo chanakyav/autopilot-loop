@@ -13,13 +13,15 @@ logger = logging.getLogger(__name__)
 __all__ = [
     "GitHubAPIError",
     "find_pr_for_branch",
-    "get_copilot_inline_comments",
     "get_copilot_review",
     "get_head_sha",
     "get_issue",
     "get_repo_nwo",
+    "get_unresolved_review_comments",
     "is_copilot_review_complete",
+    "reply_to_comment",
     "request_copilot_review",
+    "resolve_review_thread",
     "verify_new_commits",
 ]
 
@@ -130,55 +132,43 @@ def request_copilot_review(pr_number):
     logger.info("Requested Copilot review on PR #%d", pr_number)
 
 
-def get_copilot_review(pr_number):
+def get_copilot_review(pr_number, after_id=None):
     """Get the latest Copilot review for a PR.
 
+    Args:
+        pr_number: PR number.
+        after_id: If set, only return a review with id > after_id.
+
     Returns:
-        Dict with review data, or None if no Copilot review exists.
+        Dict with review data, or None if no matching Copilot review exists.
     """
     nwo = get_repo_nwo()
     output = _run_gh([
         "api", "repos/%s/pulls/%d/reviews" % (nwo, pr_number),
-        "--jq", '[.[] | select(.user.login == "copilot-pull-request-reviewer[bot]")] | last',
+        "--jq", '[.[] | select(.user.login == "copilot-pull-request-reviewer[bot]")] | sort_by(.id) | last',
     ], check=False)
 
     if not output or output == "null":
         return None
 
-    return json.loads(output)
+    review = json.loads(output)
+    if after_id and review.get("id", 0) <= after_id:
+        return None
+
+    return review
 
 
-def get_copilot_inline_comments(pr_number):
-    """Get Copilot's original inline comments on a PR.
+def is_copilot_review_complete(pr_number, after_id=None):
+    """Check if Copilot has submitted a new review.
 
-    Filters for: user.login == "Copilot" and in_reply_to_id == null.
-
-    Returns:
-        List of dicts with {path, original_line, body, diff_hunk}.
-    """
-    nwo = get_repo_nwo()
-    output = _run_gh([
-        "api", "repos/%s/pulls/%d/comments" % (nwo, pr_number),
-        "--jq", '[.[] | select(.user.login == "Copilot" and .in_reply_to_id == null) '
-                '| {path, original_line, body, diff_hunk: (.diff_hunk | split("\\n") | last)}]',
-    ], check=False)
-
-    if not output or output == "null":
-        return []
-
-    return json.loads(output)
-
-
-def is_copilot_review_complete(pr_number, since_sha=None):
-    """Check if Copilot has submitted a review.
-
-    If since_sha is provided, only considers reviews submitted after
-    the commit at that SHA (by checking if a review exists that's newer).
+    Args:
+        pr_number: PR number.
+        after_id: If set, only returns True for reviews with id > after_id.
 
     Returns:
-        True if a Copilot review is present.
+        True if a new Copilot review is present.
     """
-    review = get_copilot_review(pr_number)
+    review = get_copilot_review(pr_number, after_id=after_id)
     return review is not None
 
 
@@ -193,3 +183,105 @@ def get_issue(issue_number):
         "--json", "title,body",
     ])
     return json.loads(output)
+
+
+def reply_to_comment(pr_number, comment_id, body):
+    """Reply to an inline PR review comment.
+
+    Args:
+        pr_number: PR number.
+        comment_id: The REST API comment ID to reply to.
+        body: Reply text.
+    """
+    nwo = get_repo_nwo()
+    _run_gh([
+        "api", "repos/%s/pulls/%d/comments" % (nwo, pr_number),
+        "-f", "body=%s" % body,
+        "-F", "in_reply_to=%d" % comment_id,
+    ])
+    logger.debug("Replied to comment %d on PR #%d", comment_id, pr_number)
+
+
+def resolve_review_thread(thread_node_id):
+    """Resolve a review thread via GraphQL.
+
+    Args:
+        thread_node_id: The GraphQL node ID of the review thread.
+    """
+    query = 'mutation { resolveReviewThread(input: {threadId: "%s"}) { thread { isResolved } } }' % thread_node_id
+    _run_gh(["api", "graphql", "-f", "query=%s" % query])
+    logger.debug("Resolved thread %s", thread_node_id)
+
+
+def get_unresolved_review_comments(pr_number):
+    """Get unresolved Copilot review comments via GraphQL.
+
+    Returns only comments from unresolved threads authored by Copilot.
+
+    Returns:
+        List of dicts with {id, node_id, thread_id, path, line, body}.
+    """
+    nwo = get_repo_nwo()
+    owner, repo = nwo.split("/", 1)
+    query = """
+    {
+      repository(owner: "%s", name: "%s") {
+        pullRequest(number: %d) {
+          reviewThreads(first: 100) {
+            nodes {
+              id
+              isResolved
+              comments(first: 10) {
+                nodes {
+                  id
+                  databaseId
+                  author { login }
+                  body
+                  path
+                  line
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+    """ % (owner, repo, pr_number)
+
+    output = _run_gh(["api", "graphql", "-f", "query=%s" % query.strip()], check=False)
+    if not output:
+        return []
+
+    data = json.loads(output)
+    threads = (
+        data.get("data", {})
+        .get("repository", {})
+        .get("pullRequest", {})
+        .get("reviewThreads", {})
+        .get("nodes", [])
+    )
+
+    comments = []
+    for thread in threads:
+        if thread.get("isResolved"):
+            continue
+        thread_id = thread.get("id")
+        thread_comments = thread.get("comments", {}).get("nodes", [])
+        if not thread_comments:
+            continue
+        # First comment in thread is the original review comment
+        first = thread_comments[0]
+        author = first.get("author", {}).get("login", "")
+        # Only include Copilot comments
+        if author not in ("Copilot", "copilot-pull-request-reviewer[bot]"):
+            continue
+        comments.append({
+            "id": first.get("databaseId"),
+            "node_id": first.get("id"),
+            "thread_id": thread_id,
+            "path": first.get("path", ""),
+            "line": first.get("line"),
+            "body": first.get("body", ""),
+        })
+
+    return comments

@@ -91,7 +91,8 @@ def plan_and_implement_prompt(task_description, branch_name, custom_instructions
 def fix_prompt(review_comments_text, custom_instructions=""):
     """Prompt for the FIX phase.
 
-    Agent addresses PR review comments, commits, pushes, and self-reviews.
+    Agent addresses PR review comments, commits, pushes, self-reviews,
+    and writes a summary file for each comment.
     """
     parts = []
 
@@ -120,6 +121,17 @@ def fix_prompt(review_comments_text, custom_instructions=""):
         "6. After pushing, review your own fix by running `git diff HEAD~1` and\n"
         "   examining the output. If you introduced any new issues while fixing\n"
         "   the review comments, fix them, commit, and push again.\n"
+        "7. IMPORTANT: Write a JSON file at `.autopilot-fix-summary.json` in the\n"
+        "   repo root with your resolution for EACH comment. Use this exact format:\n"
+        "   ```json\n"
+        '   [\n'
+        '     {"comment_id": <id>, "status": "fixed", "message": "brief description of fix"},\n'
+        '     {"comment_id": <id>, "status": "skipped", "message": "reason for skipping"}\n'
+        '   ]\n'
+        "   ```\n"
+        "   The comment_id values are provided in the comments above (as `[comment_id: N]`).\n"
+        "   Status must be either `fixed` or `skipped`.\n"
+        "   Do NOT commit this file — just write it to disk.\n"
     )
 
     return "\n".join(parts)
@@ -146,10 +158,11 @@ def format_review_for_prompt(review_body, inline_comments):
         parts.append("### Inline Comments (%d)" % len(inline_comments))
         parts.append("")
         for i, comment in enumerate(inline_comments, 1):
+            comment_id = comment.get("id", "?")
             path = comment.get("path", "unknown")
-            line = comment.get("original_line", "?")
+            line = comment.get("line", comment.get("original_line", "?"))
             body = comment.get("body", "").strip()
-            parts.append("**Comment %d** — `%s` (line %s):" % (i, path, line))
+            parts.append("**Comment %d** [comment_id: %s] — `%s` (line %s):" % (i, comment_id, path, line))
             parts.append(body)
             parts.append("")
     else:

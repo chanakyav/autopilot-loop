@@ -31,9 +31,11 @@ tmux attach -t autopilot-<task_id>
 2. Agent creates a branch, commits with proper messages, opens a draft PR using the repo's PR template
 3. Requests a Copilot review via GitHub API
 4. Polls until the review completes (5-20 min)
-5. Fetches inline review comments, passes them to a new `copilot -p` session to fix
+5. Fetches unresolved inline review comments, passes them to a new `copilot -p` session to fix
 6. Agent decides what's worth addressing, commits, pushes
-7. Re-requests review, loops until clean (or max iterations reached)
+7. Replies to each review comment with what was fixed or why it was skipped, then resolves the thread
+8. Re-requests review — only unresolved comments are considered in the next cycle
+9. Loops until clean (or max iterations reached)
 
 All of this runs in a tmux session. Close your laptop — it keeps going.
 
@@ -60,7 +62,7 @@ Create `autopilot.json` in your repo root or `~/.autopilot-loop/config.json`:
   "model": "claude-opus-4.6",
   "max_iterations": 5,
   "max_retries_per_phase": 1,
-  "reviewer": "Copilot",
+  "reviewer": "copilot-pull-request-reviewer[bot]",
   "review_poll_interval_seconds": 60,
   "review_timeout_seconds": 3600,
   "agent_timeout_seconds": 1800,

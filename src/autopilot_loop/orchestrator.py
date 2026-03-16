@@ -1,7 +1,8 @@
 """Core state machine orchestrator.
 
 Manages the full lifecycle: INIT → IMPLEMENT → VERIFY_PR → REQUEST_REVIEW →
-WAIT_REVIEW → PARSE_REVIEW → FIX → VERIFY_PUSH → ... → COMPLETE.
+WAIT_REVIEW → PARSE_REVIEW → FIX → VERIFY_PUSH → RESOLVE_COMMENTS →
+REQUEST_REVIEW → ... → COMPLETE.
 """
 
 import json
@@ -13,11 +14,13 @@ from autopilot_loop.agent import run_agent
 from autopilot_loop.codespace import set_idle_timeout
 from autopilot_loop.github_api import (
     find_pr_for_branch,
-    get_copilot_inline_comments,
     get_copilot_review,
     get_head_sha,
+    get_unresolved_review_comments,
     is_copilot_review_complete,
+    reply_to_comment,
     request_copilot_review,
+    resolve_review_thread,
     verify_new_commits,
 )
 from autopilot_loop.persistence import (
@@ -49,6 +52,7 @@ STATES = [
     "PARSE_REVIEW",
     "FIX",
     "VERIFY_PUSH",
+    "RESOLVE_COMMENTS",
     "COMPLETE",
     "FAILED",
 ]
@@ -63,6 +67,7 @@ class Orchestrator:
         self.task = get_task(task_id)
         self.sessions_dir = get_sessions_dir(task_id)
         self._retry_counts = {}  # phase -> retry count
+        self._last_review_id = None  # tracks the last processed review ID
 
     def run(self):
         """Run the state machine until COMPLETE or FAILED."""
@@ -95,6 +100,7 @@ class Orchestrator:
             "PARSE_REVIEW": self._do_parse_review,
             "FIX": self._do_fix,
             "VERIFY_PUSH": self._do_verify_push,
+            "RESOLVE_COMMENTS": self._do_resolve_comments,
         }.get(state)
 
         if handler is None:
@@ -260,6 +266,13 @@ class Orchestrator:
     def _do_request_review(self):
         """Request Copilot review on the PR."""
         pr_number = self.task["pr_number"]
+
+        # Snapshot the current latest review ID so we can detect NEW reviews
+        current_review = get_copilot_review(pr_number)
+        if current_review:
+            self._last_review_id = current_review.get("id", 0)
+            logger.debug("[%s] Last review ID before request: %s", self.task_id, self._last_review_id)
+
         try:
             request_copilot_review(pr_number)
             logger.info("[%s] ✓ Requested Copilot review on PR #%d", self.task_id, pr_number)
@@ -287,7 +300,7 @@ class Orchestrator:
                 )
                 return "COMPLETE"
 
-            if is_copilot_review_complete(pr_number):
+            if is_copilot_review_complete(pr_number, after_id=self._last_review_id):
                 logger.info("[%s] ✓ Copilot review received", self.task_id)
                 return "PARSE_REVIEW"
 
@@ -296,37 +309,43 @@ class Orchestrator:
             time.sleep(poll_interval)
 
     def _do_parse_review(self):
-        """Fetch and parse the Copilot review."""
+        """Fetch and parse unresolved Copilot review comments."""
         pr_number = self.task["pr_number"]
         iteration = self.task["iteration"] + 1
         max_iterations = self.task["max_iterations"]
 
+        # Get only UNRESOLVED Copilot comments (already-resolved ones are skipped)
+        unresolved = get_unresolved_review_comments(pr_number)
+
+        # Also get the latest review body for logging
         review = get_copilot_review(pr_number)
         review_body = review.get("body", "") if review else ""
-        inline_comments = get_copilot_inline_comments(pr_number)
 
         # Save review data
         review_file = os.path.join(self.sessions_dir, "review-%d.json" % iteration)
         with open(review_file, "w") as f:
-            json.dump({"body": review_body, "comments": inline_comments}, f, indent=2)
+            json.dump({"body": review_body, "comments": unresolved}, f, indent=2)
 
-        save_review(self.task_id, iteration, review_body, inline_comments)
+        save_review(self.task_id, iteration, review_body, unresolved)
         update_task(self.task_id, iteration=iteration)
 
-        if not inline_comments:
-            logger.info("[%s] ✓ 0 inline comments. Clean!", self.task_id)
+        # Store for use by FIX state
+        self._current_comments = unresolved
+
+        if not unresolved:
+            logger.info("[%s] ✓ 0 unresolved comments. Clean!", self.task_id)
             return "COMPLETE"
 
-        logger.info("[%s] %d inline comments found:", self.task_id, len(inline_comments))
-        for i, c in enumerate(inline_comments, 1):
+        logger.info("[%s] %d unresolved comments found:", self.task_id, len(unresolved))
+        for i, c in enumerate(unresolved, 1):
             logger.info("[%s]   %d. %s:%s — %s", self.task_id, i,
-                        c.get("path", "?"), c.get("original_line", "?"),
+                        c.get("path", "?"), c.get("line", "?"),
                         c.get("body", "")[:80])
 
         if iteration >= max_iterations:
             logger.warning(
-                "[%s] Reached max iterations (%d/%d) with %d remaining comments",
-                self.task_id, iteration, max_iterations, len(inline_comments),
+                "[%s] Reached max iterations (%d/%d) with %d unresolved comments",
+                self.task_id, iteration, max_iterations, len(unresolved),
             )
             return "COMPLETE"
 
@@ -337,13 +356,17 @@ class Orchestrator:
         pr_number = self.task["pr_number"]
         iteration = self.task["iteration"]
 
-        # Get current review data
+        # Use the unresolved comments fetched in PARSE_REVIEW
+        unresolved = getattr(self, "_current_comments", None)
+        if unresolved is None:
+            unresolved = get_unresolved_review_comments(pr_number)
+
+        # Get latest review body for context
         review = get_copilot_review(pr_number)
         review_body = review.get("body", "") if review else ""
-        inline_comments = get_copilot_inline_comments(pr_number)
 
         # Format for prompt
-        review_text = format_review_for_prompt(review_body, inline_comments)
+        review_text = format_review_for_prompt(review_body, unresolved)
         prompt = fix_prompt(
             review_comments_text=review_text,
             custom_instructions=self.config.get("custom_instructions", ""),
@@ -366,13 +389,13 @@ class Orchestrator:
 
         if pre_sha and verify_new_commits(branch, pre_sha):
             logger.info("[%s] ✓ New commits found on %s", self.task_id, branch)
-            return "REQUEST_REVIEW"
+            return "RESOLVE_COMMENTS"
 
         # Maybe the agent already pushed and we just need to check
         new_sha = get_head_sha(branch)
         if new_sha and new_sha != pre_sha:
             logger.info("[%s] ✓ New commits found on %s", self.task_id, branch)
-            return "REQUEST_REVIEW"
+            return "RESOLVE_COMMENTS"
 
         # No new commits — retry FIX once
         retry_key = "VERIFY_PUSH_FIX_RETRY"
@@ -383,3 +406,75 @@ class Orchestrator:
         logger.warning("[%s] No new commits on %s, retrying FIX", self.task_id, branch)
         self._retry_counts[retry_key] = 1
         return "FIX"
+
+    def _do_resolve_comments(self):
+        """Reply to and resolve review comments based on fix summary."""
+        pr_number = self.task["pr_number"]
+
+        # Read the fix summary file written by the agent
+        summary_file = os.path.join(os.getcwd(), ".autopilot-fix-summary.json")
+        summaries = {}
+        if os.path.isfile(summary_file):
+            try:
+                with open(summary_file, "r") as f:
+                    raw = json.load(f)
+                for entry in raw:
+                    cid = entry.get("comment_id")
+                    if cid is not None:
+                        summaries[int(cid)] = entry
+                logger.info("[%s] Loaded fix summary: %d entries", self.task_id, len(summaries))
+            except (json.JSONDecodeError, KeyError) as e:
+                logger.warning("[%s] Could not parse fix summary: %s", self.task_id, e)
+
+            # Clean up the file
+            try:
+                os.remove(summary_file)
+            except OSError:
+                pass
+        else:
+            logger.info("[%s] No fix summary file found, resolving all as addressed", self.task_id)
+
+        # Get the latest commit SHA for referencing in replies
+        head_sha = get_head_sha(self.task["branch"]) or "latest commit"
+        short_sha = head_sha[:7] if len(head_sha) >= 7 else head_sha
+
+        # Get the comments we need to resolve
+        comments = getattr(self, "_current_comments", None)
+        if comments is None:
+            comments = get_unresolved_review_comments(pr_number)
+
+        resolved_count = 0
+        for comment in comments:
+            comment_id = comment.get("id")
+            thread_id = comment.get("thread_id")
+            if not comment_id or not thread_id:
+                continue
+
+            summary = summaries.get(comment_id, {})
+            status = summary.get("status", "fixed")
+            message = summary.get("message", "")
+
+            # Build reply
+            if status == "skipped":
+                reply_body = (
+                    "\xf0\x9f\xa4\x96 **autopilot-loop**: Skipped \u2014 %s" % message
+                    if message
+                    else "\xf0\x9f\xa4\x96 **autopilot-loop**: Skipped \u2014 determined not worth addressing"
+                )
+            else:
+                reply_body = (
+                    "\xf0\x9f\xa4\x96 **autopilot-loop**: Addressed in %s \u2014 %s" % (short_sha, message)
+                    if message
+                    else "\xf0\x9f\xa4\x96 **autopilot-loop**: Addressed in %s" % short_sha
+                )
+
+            try:
+                reply_to_comment(pr_number, comment_id, reply_body)
+                resolve_review_thread(thread_id)
+                resolved_count += 1
+                logger.debug("[%s] Resolved comment %d: %s", self.task_id, comment_id, status)
+            except Exception as e:
+                logger.warning("[%s] Failed to resolve comment %d: %s", self.task_id, comment_id, e)
+
+        logger.info("[%s] ✓ Resolved %d/%d comments", self.task_id, resolved_count, len(comments))
+        return "REQUEST_REVIEW"

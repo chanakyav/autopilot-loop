@@ -21,7 +21,7 @@ def config():
         "model": "test-model",
         "max_iterations": 3,
         "max_retries_per_phase": 1,
-        "reviewer": "Copilot",
+        "reviewer": "copilot-pull-request-reviewer[bot]",
         "review_poll_interval_seconds": 1,
         "review_timeout_seconds": 5,
         "agent_timeout_seconds": 60,
@@ -123,33 +123,33 @@ class TestOrchestratorWaitReview:
 
 
 class TestOrchestratorParseReview:
-    @patch("autopilot_loop.orchestrator.get_copilot_inline_comments")
+    @patch("autopilot_loop.orchestrator.get_unresolved_review_comments")
     @patch("autopilot_loop.orchestrator.get_copilot_review")
-    def test_no_comments_completes(self, mock_review, mock_comments, config, tmp_path):
-        mock_review.return_value = {"body": "LGTM"}
-        mock_comments.return_value = []
+    def test_no_comments_completes(self, mock_review, mock_unresolved, config, tmp_path):
+        mock_review.return_value = {"id": 100, "body": "LGTM"}
+        mock_unresolved.return_value = []
         task_id = _create_test_task()
         persistence.update_task(task_id, pr_number=42)
         orch = Orchestrator(task_id, config)
         orch.task = persistence.get_task(task_id)
         assert orch._do_parse_review() == "COMPLETE"
 
-    @patch("autopilot_loop.orchestrator.get_copilot_inline_comments")
+    @patch("autopilot_loop.orchestrator.get_unresolved_review_comments")
     @patch("autopilot_loop.orchestrator.get_copilot_review")
-    def test_comments_trigger_fix(self, mock_review, mock_comments, config, tmp_path):
-        mock_review.return_value = {"body": "issues found"}
-        mock_comments.return_value = [{"path": "a.rb", "body": "fix this"}]
+    def test_comments_trigger_fix(self, mock_review, mock_unresolved, config, tmp_path):
+        mock_review.return_value = {"id": 100, "body": "issues found"}
+        mock_unresolved.return_value = [{"id": 1, "thread_id": "T1", "path": "a.rb", "body": "fix this"}]
         task_id = _create_test_task()
         persistence.update_task(task_id, pr_number=42)
         orch = Orchestrator(task_id, config)
         orch.task = persistence.get_task(task_id)
         assert orch._do_parse_review() == "FIX"
 
-    @patch("autopilot_loop.orchestrator.get_copilot_inline_comments")
+    @patch("autopilot_loop.orchestrator.get_unresolved_review_comments")
     @patch("autopilot_loop.orchestrator.get_copilot_review")
-    def test_max_iterations_completes(self, mock_review, mock_comments, config, tmp_path):
-        mock_review.return_value = {"body": "issues"}
-        mock_comments.return_value = [{"path": "a.rb", "body": "fix"}]
+    def test_max_iterations_completes(self, mock_review, mock_unresolved, config, tmp_path):
+        mock_review.return_value = {"id": 100, "body": "issues"}
+        mock_unresolved.return_value = [{"id": 1, "thread_id": "T1", "path": "a.rb", "body": "fix"}]
         task_id = _create_test_task()
         persistence.update_task(task_id, pr_number=42, iteration=3)  # At max
         orch = Orchestrator(task_id, config)
@@ -159,13 +159,13 @@ class TestOrchestratorParseReview:
 
 class TestOrchestratorFix:
     @patch("autopilot_loop.orchestrator.get_head_sha")
-    @patch("autopilot_loop.orchestrator.get_copilot_inline_comments")
+    @patch("autopilot_loop.orchestrator.get_unresolved_review_comments")
     @patch("autopilot_loop.orchestrator.get_copilot_review")
     @patch("autopilot_loop.orchestrator.run_agent")
-    def test_fix_success(self, mock_run, mock_review, mock_comments, mock_sha, config):
+    def test_fix_success(self, mock_run, mock_review, mock_unresolved, mock_sha, config):
         mock_run.return_value = _mock_agent_result()
-        mock_review.return_value = {"body": "review"}
-        mock_comments.return_value = [{"path": "a.rb", "original_line": 10, "body": "fix"}]
+        mock_review.return_value = {"id": 100, "body": "review"}
+        mock_unresolved.return_value = [{"id": 1, "thread_id": "T1", "path": "a.rb", "line": 10, "body": "fix"}]
         mock_sha.return_value = "abc123"
 
         task_id = _create_test_task()
@@ -177,24 +177,27 @@ class TestOrchestratorFix:
 
 class TestOrchestratorFullLoop:
     @patch("autopilot_loop.orchestrator.set_idle_timeout")
+    @patch("autopilot_loop.orchestrator.resolve_review_thread")
+    @patch("autopilot_loop.orchestrator.reply_to_comment")
     @patch("autopilot_loop.orchestrator.verify_new_commits")
     @patch("autopilot_loop.orchestrator.get_head_sha")
     @patch("autopilot_loop.orchestrator.is_copilot_review_complete")
     @patch("autopilot_loop.orchestrator.request_copilot_review")
-    @patch("autopilot_loop.orchestrator.get_copilot_inline_comments")
+    @patch("autopilot_loop.orchestrator.get_unresolved_review_comments")
     @patch("autopilot_loop.orchestrator.get_copilot_review")
     @patch("autopilot_loop.orchestrator.find_pr_for_branch")
     @patch("autopilot_loop.orchestrator.run_agent")
     def test_clean_pr_no_comments(
-        self, mock_run, mock_find_pr, mock_review, mock_comments,
-        mock_request, mock_is_complete, mock_sha, mock_verify, mock_timeout,
+        self, mock_run, mock_find_pr, mock_review, mock_unresolved,
+        mock_request, mock_is_complete, mock_sha, mock_verify,
+        mock_reply, mock_resolve, mock_timeout,
         config,
     ):
-        """Full loop: implement → verify PR → request review → wait → parse → COMPLETE (no comments)."""
+        """Full loop: implement → verify PR → request review → wait → parse → COMPLETE."""
         mock_run.return_value = _mock_agent_result()
         mock_find_pr.return_value = 42
-        mock_review.return_value = {"body": "LGTM"}
-        mock_comments.return_value = []
+        mock_review.return_value = {"id": 100, "body": "LGTM"}
+        mock_unresolved.return_value = []
         mock_is_complete.return_value = True
 
         task_id = _create_test_task()
@@ -203,35 +206,34 @@ class TestOrchestratorFullLoop:
         assert result["state"] == "COMPLETE"
 
     @patch("autopilot_loop.orchestrator.set_idle_timeout")
+    @patch("autopilot_loop.orchestrator.resolve_review_thread")
+    @patch("autopilot_loop.orchestrator.reply_to_comment")
     @patch("autopilot_loop.orchestrator.verify_new_commits")
     @patch("autopilot_loop.orchestrator.get_head_sha")
     @patch("autopilot_loop.orchestrator.is_copilot_review_complete")
     @patch("autopilot_loop.orchestrator.request_copilot_review")
-    @patch("autopilot_loop.orchestrator.get_copilot_inline_comments")
+    @patch("autopilot_loop.orchestrator.get_unresolved_review_comments")
     @patch("autopilot_loop.orchestrator.get_copilot_review")
     @patch("autopilot_loop.orchestrator.find_pr_for_branch")
     @patch("autopilot_loop.orchestrator.run_agent")
     def test_one_fix_iteration(
-        self, mock_run, mock_find_pr, mock_review, mock_comments,
-        mock_request, mock_is_complete, mock_sha, mock_verify, mock_timeout,
+        self, mock_run, mock_find_pr, mock_review, mock_unresolved,
+        mock_request, mock_is_complete, mock_sha, mock_verify,
+        mock_reply, mock_resolve, mock_timeout,
         config,
     ):
-        """Full loop with one fix iteration."""
+        """Full loop with one fix iteration: comments → fix → resolve → re-review → clean."""
         mock_run.return_value = _mock_agent_result()
         mock_find_pr.return_value = 42
         mock_is_complete.return_value = True
         mock_sha.return_value = "sha1"
         mock_verify.return_value = True
 
-        # First review: 1 comment. Second review: clean.
-        mock_review.side_effect = [
-            {"body": "issues"},
-            {"body": "LGTM"},
-            {"body": "LGTM"},
-        ]
-        mock_comments.side_effect = [
-            [{"path": "a.rb", "original_line": 10, "body": "fix this"}],
-            [{"path": "a.rb", "original_line": 10, "body": "fix this"}],
+        # First pass: 1 unresolved comment. After fix+resolve: 0 unresolved.
+        mock_review.return_value = {"id": 100, "body": "review"}
+        mock_unresolved.side_effect = [
+            [{"id": 1, "thread_id": "T1", "path": "a.rb", "line": 10, "body": "fix this"}],
+            [{"id": 1, "thread_id": "T1", "path": "a.rb", "line": 10, "body": "fix this"}],
             [],
         ]
 
@@ -240,4 +242,8 @@ class TestOrchestratorFullLoop:
         result = orch.run()
         assert result["state"] == "COMPLETE"
         task = persistence.get_task(task_id)
-        assert task["iteration"] == 2  # One fix iteration
+        # iteration 1: parse found comments, 2: parse after fix found comments (resolved), 3: clean
+        assert task["iteration"] >= 2
+        # Verify comments were resolved
+        assert mock_reply.called
+        assert mock_resolve.called
