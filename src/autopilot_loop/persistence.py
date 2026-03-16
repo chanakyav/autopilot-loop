@@ -16,6 +16,8 @@ __all__ = [
     "get_task",
     "update_task",
     "list_tasks",
+    "get_active_tasks",
+    "get_tasks_on_branch",
     "save_review",
     "get_reviews",
     "save_agent_run",
@@ -215,6 +217,32 @@ def list_tasks(limit=20):
     try:
         rows = conn.execute(
             "SELECT * FROM tasks ORDER BY created_at DESC LIMIT ?", (limit,)
+        ).fetchall()
+        return [dict(r) for r in rows]
+    finally:
+        conn.close()
+
+
+def get_active_tasks():
+    """Get all tasks not in a terminal state (COMPLETE, FAILED, STOPPED)."""
+    conn = _get_db()
+    try:
+        rows = conn.execute(
+            "SELECT * FROM tasks WHERE state NOT IN ('COMPLETE', 'FAILED', 'STOPPED') "
+            "ORDER BY created_at DESC"
+        ).fetchall()
+        return [dict(r) for r in rows]
+    finally:
+        conn.close()
+
+
+def get_tasks_on_branch(branch):
+    """Get all non-terminal tasks on a given branch. Used for branch locking."""
+    conn = _get_db()
+    try:
+        rows = conn.execute(
+            "SELECT * FROM tasks WHERE branch = ? AND state NOT IN ('COMPLETE', 'FAILED', 'STOPPED')",
+            (branch,)
         ).fetchall()
         return [dict(r) for r in rows]
     finally:

@@ -9,6 +9,9 @@ description = "Headless orchestrator that automates the Copilot coding-review-fi
 readme = "README.md"
 license = {file = "LICENSE"}
 requires-python = ">=3.8"
+dependencies = [
+    "rich>=13.0",
+]
 authors = [
     { name = "Chanakya Valluri" },
 ]
