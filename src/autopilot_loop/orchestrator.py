@@ -116,13 +116,16 @@ class BaseOrchestrator:
         """Validate config, create session dir, set codespace idle timeout."""
         logger.info("[%s] INIT \u2192 Validated config, created session dir", self.task_id)
 
-        # Set codespace idle timeout (non-fatal)
-        try:
-            set_idle_timeout(self.config.get("idle_timeout_minutes", 120))
-            logger.info("[%s] \u2713 Codespace idle timeout set to %d minutes",
-                        self.task_id, self.config.get("idle_timeout_minutes", 120))
-        except Exception as e:
-            logger.warning("[%s] Could not set codespace idle timeout: %s", self.task_id, e)
+        # Set codespace idle timeout (non-fatal, can be disabled via config)
+        if self.config.get("idle_timeout_enabled", True):
+            try:
+                set_idle_timeout(self.config.get("idle_timeout_minutes", 120))
+                logger.info("[%s] \u2713 Codespace idle timeout set to %d minutes",
+                            self.task_id, self.config.get("idle_timeout_minutes", 120))
+            except Exception as e:
+                logger.warning("[%s] Could not set codespace idle timeout: %s", self.task_id, e)
+        else:
+            logger.info("[%s] Idle timeout extension disabled by config", self.task_id)
 
         return self._init_next_state()
 

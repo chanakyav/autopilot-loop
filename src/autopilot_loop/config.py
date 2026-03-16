@@ -21,6 +21,7 @@ DEFAULTS = {
     "review_timeout_seconds": 3600,
     "agent_timeout_seconds": 1800,
     "idle_timeout_minutes": 120,
+    "idle_timeout_enabled": True,
     "keepalive_enabled": False,
     "keepalive_interval_seconds": 300,
     "branch_pattern": "autopilot/{task_id}",
