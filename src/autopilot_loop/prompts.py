@@ -173,6 +173,11 @@ def fix_prompt(review_comments_text, custom_instructions=""):
         "   The comment_id values are provided in the comments above (as `[comment_id: N]`).\n"
         "   Status must be either `fixed` or `skipped`.\n"
         "   Do NOT commit this file — just write it to disk.\n"
+        "8. If your fixes significantly changed the implementation approach or\n"
+        "   the PR scope has evolved, update the PR title and/or description\n"
+        "   using `gh pr edit --title '...' --body '...'` to reflect the\n"
+        "   current state of the changes. Only do this if the approach actually\n"
+        "   changed — minor fixes don't need a description update.\n"
     )
 
     return "\n".join(parts)
