@@ -3,6 +3,12 @@
 Provides table, JSON, live-watch, and interactive TUI views of task status.
 Uses the ``rich`` library for formatted terminal output.
 Interactive mode uses ``termios`` for raw keyboard input (Unix only).
+
+Views:
+- status_table(): one-shot table print
+- status_json(): JSON output for scripting
+- status_watch(): passive auto-refresh (non-interactive, for piped output)
+- status_interactive(): full-screen TUI with keybindings, detail panel, log viewer
 """
 
 import json
@@ -12,7 +18,12 @@ import subprocess
 import sys
 import time
 
-from autopilot_loop.persistence import get_active_tasks, list_tasks, update_task
+from autopilot_loop.persistence import (
+    get_active_tasks,
+    get_sessions_dir,
+    list_tasks,
+    update_task,
+)
 
 __all__ = [
     "status_table",
@@ -78,6 +89,8 @@ _STATIC_INDICATORS = {
     "STOPPED": "\u25a0",
 }
 
+_TERMINAL_STATES = frozenset({"COMPLETE", "FAILED", "STOPPED"})
+
 
 def _get_indicator(state, tick):
     """Return an animated or static indicator for the given state."""
@@ -92,7 +105,7 @@ def _get_indicator(state, tick):
 # Table builder
 # ---------------------------------------------------------------------------
 
-def _build_table(title, tasks, selected_idx=-1, tick=0):
+def _build_table(title, tasks, selected_idx=-1, tick=0, compact=False):
     """Build a rich Table from a list of task dicts.
 
     Args:
@@ -100,18 +113,20 @@ def _build_table(title, tasks, selected_idx=-1, tick=0):
         tasks: List of task dicts from persistence.
         selected_idx: Index of the highlighted row (-1 for none).
         tick: Animation tick counter for spinner frames.
+        compact: If True, use minimal padding (for detail panel mode).
     """
-    from rich.box import ROUNDED
+    from rich.box import HEAVY
     from rich.table import Table
 
+    pad = (0, 1) if compact else (1, 1)
     table = Table(
         title="[bold bright_white]%s[/]" % title,
-        box=ROUNDED,
+        box=HEAVY,
         border_style="dim cyan",
         expand=True,
-        padding=(0, 1),
+        padding=pad,
     )
-    table.add_column("#", style="dim", width=3, no_wrap=True)
+    table.add_column("#", style="dim", width=4, no_wrap=True)
     table.add_column("Task ID", style="bold", no_wrap=True)
     table.add_column("Mode", no_wrap=True)
     table.add_column("Branch", no_wrap=True)
@@ -134,7 +149,7 @@ def _build_table(title, tasks, selected_idx=-1, tick=0):
         elapsed = _format_elapsed(t["created_at"])
 
         is_selected = (i == selected_idx)
-        prefix = "\u25ba " if is_selected else "  "
+        prefix = " \u25ba " if is_selected else "   "
         row_style = "reverse" if is_selected else ""
 
         state_cell = "[%s]%s[/]" % (style, state_display) if style else state_display
@@ -148,15 +163,97 @@ def _build_table(title, tasks, selected_idx=-1, tick=0):
     return table
 
 
-def _build_footer():
-    """Build the keybinding hint footer."""
+# ---------------------------------------------------------------------------
+# Detail panel builder
+# ---------------------------------------------------------------------------
+
+def _build_detail_panel(task):
+    """Build a detail panel for the selected task."""
+    from rich.box import HEAVY
+    from rich.panel import Panel
     from rich.text import Text
 
+    lines = Text()
+    lines.append("Task ", style="dim")
+    lines.append(task["id"], style="bold bright_white")
+    lines.append(" \u2014 %s\n" % task.get("task_mode", "review"), style="dim")
+
+    lines.append("Branch:  ", style="dim")
+    lines.append("%s\n" % (task.get("branch") or "-"), style="bright_white")
+
+    lines.append("State:   ", style="dim")
+    state = task["state"]
+    style = _STATE_STYLES.get(state, "")
+    lines.append("%s" % state, style=style)
+    lines.append("  (%s)\n" % _format_elapsed(task["created_at"]), style="dim")
+
+    pr_num = task.get("pr_number")
+    lines.append("PR:      ", style="dim")
+    lines.append("%s\n" % ("#%d" % pr_num if pr_num else "not yet created"), style="bright_white")
+
+    lines.append("Iter:    ", style="dim")
+    lines.append("%d/%d\n" % (task["iteration"], task["max_iterations"]), style="bright_white")
+
+    # Tail the orchestrator log
+    lines.append("\n")
+    lines.append("Recent log:\n", style="bold dim")
+    log_lines = _read_log_tail(task["id"], max_lines=8)
+    if log_lines:
+        for line in log_lines:
+            lines.append(line + "\n", style="dim")
+    else:
+        lines.append("  (no logs yet)\n", style="dim")
+
+    return Panel(
+        lines,
+        box=HEAVY,
+        border_style="dim cyan",
+        expand=True,
+        padding=(0, 1),
+    )
+
+
+def _read_log_tail(task_id, max_lines=8):
+    """Read the last N lines from a task's orchestrator log."""
+    try:
+        sessions_dir = get_sessions_dir(task_id)
+        log_file = os.path.join(sessions_dir, "orchestrator.log")
+        if not os.path.isfile(log_file):
+            return []
+        with open(log_file, "r") as f:
+            all_lines = f.readlines()
+        return [line.rstrip() for line in all_lines[-max_lines:]]
+    except (OSError, IOError):
+        return []
+
+
+def _read_log_full(task_id):
+    """Read the full orchestrator log for a task."""
+    try:
+        sessions_dir = get_sessions_dir(task_id)
+        log_file = os.path.join(sessions_dir, "orchestrator.log")
+        if not os.path.isfile(log_file):
+            return []
+        with open(log_file, "r") as f:
+            return [line.rstrip() for line in f.readlines()]
+    except (OSError, IOError):
+        return []
+
+
+# ---------------------------------------------------------------------------
+# Footer builders
+# ---------------------------------------------------------------------------
+
+def _build_footer_main():
+    """Footer for the main session list view."""
+    from rich.text import Text
     footer = Text()
     keys = [
         ("j/k", "navigate"),
         ("Enter", "attach"),
         ("x", "stop"),
+        ("l", "logs"),
+        ("d", "detail"),
         ("r", "refresh"),
         ("q", "quit"),
     ]
@@ -166,6 +263,50 @@ def _build_footer():
         footer.append(key, style="bold bright_white")
         footer.append(" %s" % action, style="dim")
     return footer
+
+
+def _build_footer_detail():
+    """Footer for the detail panel view."""
+    from rich.text import Text
+    footer = Text()
+    keys = [
+        ("j/k", "navigate"),
+        ("d", "close detail"),
+        ("l", "full logs"),
+        ("q", "quit"),
+    ]
+    for i, (key, action) in enumerate(keys):
+        if i > 0:
+            footer.append("  ", style="dim")
+        footer.append(key, style="bold bright_white")
+        footer.append(" %s" % action, style="dim")
+    return footer
+
+
+def _build_footer_logs():
+    """Footer for the log viewer."""
+    from rich.text import Text
+    footer = Text()
+    keys = [
+        ("j/k", "scroll"),
+        ("G", "end"),
+        ("g", "top"),
+        ("q", "back"),
+    ]
+    for i, (key, action) in enumerate(keys):
+        if i > 0:
+            footer.append("  ", style="dim")
+        footer.append(key, style="bold bright_white")
+        footer.append(" %s" % action, style="dim")
+    return footer
+
+
+def _build_status_message(msg):
+    """Build a status message line."""
+    from rich.text import Text
+    if not msg:
+        return Text("")
+    return Text(msg, style="dim yellow")
 
 
 # ---------------------------------------------------------------------------
@@ -253,10 +394,8 @@ def _read_key(fd, timeout=2.0):
 
     b = ch[0] if isinstance(ch[0], int) else ord(ch[0])
 
-    # Enter
     if b in (10, 13):
         return "enter"
-    # Escape — could be bare Esc or start of arrow sequence
     if b == 27:
         ready2, _, _ = select.select([fd], [], [], 0.05)
         if ready2:
@@ -276,18 +415,189 @@ def _read_key(fd, timeout=2.0):
         return "stop"
     if b == ord("r"):
         return "refresh"
+    if b == ord("l"):
+        return "logs"
+    if b == ord("d") or b == ord(" "):
+        return "detail"
+    if b == ord("G"):
+        return "end"
+    if b == ord("g"):
+        return "top"
 
     return None
 
 
 # ---------------------------------------------------------------------------
-# Interactive TUI
+# Terminal helpers
+# ---------------------------------------------------------------------------
+
+_ENTER_ALT_SCREEN = "\x1b[?1049h"
+_EXIT_ALT_SCREEN = "\x1b[?1049l"
+_CLEAR_SCREEN = "\x1b[2J\x1b[H"
+_HIDE_CURSOR = "\x1b[?25l"
+_SHOW_CURSOR = "\x1b[?25h"
+
+
+def _enter_tui():
+    """Enter the alternate screen buffer and hide cursor."""
+    sys.stdout.write(_ENTER_ALT_SCREEN + _HIDE_CURSOR)
+    sys.stdout.flush()
+
+
+def _exit_tui():
+    """Exit the alternate screen buffer and show cursor."""
+    sys.stdout.write(_SHOW_CURSOR + _EXIT_ALT_SCREEN)
+    sys.stdout.flush()
+
+
+def _clear():
+    """Clear the alternate screen and move cursor to top-left."""
+    sys.stdout.write(_CLEAR_SCREEN)
+    sys.stdout.flush()
+
+
+# ---------------------------------------------------------------------------
+# Safe action handlers (never crash, always return a status message)
+# ---------------------------------------------------------------------------
+
+def _do_attach(task):
+    """Try to attach to a task's tmux session. Returns a status message or None."""
+    tmux_session = "autopilot-%s" % task["id"]
+    try:
+        result = subprocess.run(
+            ["tmux", "switch-client", "-t", tmux_session],
+            capture_output=True, check=True,
+        )
+        return None
+    except subprocess.CalledProcessError:
+        pass
+    except FileNotFoundError:
+        return "tmux not available"
+
+    # Try attach as subprocess (NOT execvp — we want to return)
+    try:
+        result = subprocess.run(
+            ["tmux", "has-session", "-t", tmux_session],
+            capture_output=True,
+        )
+        if result.returncode != 0:
+            return "Session not running \u2014 task is %s" % task["state"]
+        # Session exists but switch-client failed (not inside tmux)
+        return "Run: tmux attach -t %s" % tmux_session
+    except FileNotFoundError:
+        return "tmux not available"
+
+
+def _do_stop(task):
+    """Try to stop a task. Returns a status message."""
+    if task["state"] in _TERMINAL_STATES:
+        return "Already %s" % task["state"].lower()
+
+    tmux_session = "autopilot-%s" % task["id"]
+    try:
+        subprocess.run(
+            ["tmux", "kill-session", "-t", tmux_session],
+            check=True, capture_output=True,
+        )
+    except (subprocess.CalledProcessError, FileNotFoundError):
+        pass  # Session may already be gone
+
+    update_task(task["id"], pre_stop_state=task["state"], state="STOPPED")
+    return "Stopped task %s" % task["id"]
+
+
+# ---------------------------------------------------------------------------
+# Log viewer TUI
+# ---------------------------------------------------------------------------
+
+def _logs_view(fd, old_settings, task_id, interval=2):
+    """Full-screen log viewer for a task. Returns when user presses q/Esc."""
+    import termios
+    import tty
+
+    from rich.box import HEAVY
+    from rich.console import Console, Group
+    from rich.panel import Panel
+    from rich.text import Text
+
+    scroll_offset = 0
+    lines = _read_log_full(task_id)
+    if not lines:
+        return "No logs available for task %s" % task_id
+
+    # Jump to end by default
+    console_height = os.get_terminal_size().lines - 6  # borders + footer
+    scroll_offset = max(0, len(lines) - console_height)
+
+    while True:
+        termios.tcsetattr(fd, termios.TCSADRAIN, old_settings)
+        _clear()
+
+        console = Console()
+        visible = lines[scroll_offset:scroll_offset + console_height]
+
+        log_text = Text()
+        for line in visible:
+            log_text.append(line + "\n", style="dim")
+
+        panel = Panel(
+            log_text,
+            title="[bold bright_white]Logs \u2014 Task %s[/]" % task_id,
+            box=HEAVY,
+            border_style="dim cyan",
+            expand=True,
+            padding=(0, 1),
+        )
+
+        position = Text()
+        position.append(
+            "  Line %d-%d of %d" % (
+                scroll_offset + 1,
+                min(scroll_offset + console_height, len(lines)),
+                len(lines),
+            ),
+            style="dim",
+        )
+
+        console.print(Group(panel, _build_footer_logs(), position))
+
+        tty.setraw(fd)
+        key = _read_key(fd, timeout=interval)
+
+        if key in ("quit", "esc"):
+            return None
+
+        if key == "down":
+            scroll_offset = min(scroll_offset + 1, max(0, len(lines) - console_height))
+        elif key == "up":
+            scroll_offset = max(scroll_offset - 1, 0)
+        elif key == "end":
+            scroll_offset = max(0, len(lines) - console_height)
+        elif key == "top":
+            scroll_offset = 0
+        elif key is None:
+            # Timeout — re-read log in case it grew
+            lines = _read_log_full(task_id)
+            if not lines:
+                return None
+
+
+# ---------------------------------------------------------------------------
+# Interactive TUI (main entry point)
 # ---------------------------------------------------------------------------
 
 def status_interactive(interval=2):
     """Full-screen interactive dashboard with keybindings.
 
-    Requires a TTY. Falls back to status_watch() if not a terminal.
+    Features:
+    - j/k navigate, Enter attach, x stop, l logs, d detail, r refresh, q quit
+    - Animated spinners for active states
+    - Detail panel toggle showing task metadata + log tail
+    - Full log viewer with j/k scroll
+    - Alternate screen buffer (no scrollback bleed)
+    - Safe actions with status messages (never crashes out of TUI)
+
+    Falls back to status_watch() if not a TTY or termios unavailable.
     """
     if not sys.stdin.isatty():
         status_watch(interval=interval)
@@ -311,43 +621,70 @@ def status_interactive(interval=2):
 
     selected = 0
     tick = 0
+    detail_open = False
+    status_msg = ""
+    status_msg_until = 0
 
-    def render(console):
+    def set_status(msg, duration=3):
+        nonlocal status_msg, status_msg_until
+        status_msg = msg
+        status_msg_until = time.time() + duration
+
+    def get_status():
+        if time.time() < status_msg_until:
+            return status_msg
+        return ""
+
+    def render_main(console):
         tasks = list_tasks()
         if not tasks:
             from rich.table import Table
             table = Table(title="[bold bright_white]autopilot-loop \u2014 No sessions[/]")
-            return Group(table, _build_footer()), tasks
+            footer = _build_footer_main()
+            msg = _build_status_message(get_status())
+            return Group(table, footer, msg), tasks
 
         sel = min(selected, len(tasks) - 1)
-        table = _build_table("autopilot-loop \u2014 Sessions", tasks,
-                             selected_idx=sel, tick=tick)
-        return Group(table, _build_footer()), tasks
+        title = "autopilot-loop \u2014 Sessions (%d)" % len(tasks)
+        table = _build_table(title, tasks, selected_idx=sel, tick=tick,
+                             compact=detail_open)
+
+        parts = [table]
+        if detail_open and tasks:
+            parts.append(_build_detail_panel(tasks[sel]))
+
+        footer = _build_footer_detail() if detail_open else _build_footer_main()
+        parts.append(footer)
+        msg_text = get_status()
+        if msg_text:
+            parts.append(_build_status_message(msg_text))
+
+        return Group(*parts), tasks
 
     try:
+        _enter_tui()
         tty.setraw(fd)
 
         while True:
-            # Temporarily restore cooked mode for rendering
+            # Restore cooked mode for rendering
             termios.tcsetattr(fd, termios.TCSADRAIN, old_settings)
-
-            # Clear screen and move cursor to top-left
-            sys.stdout.write("\x1b[2J\x1b[H")
-            sys.stdout.flush()
+            _clear()
 
             console = Console()
-            content, tasks = render(console)
+            content, tasks = render_main(console)
             console.print(content)
 
             # Back to raw mode for key reading
             tty.setraw(fd)
-
             key = _read_key(fd, timeout=interval)
 
             if key in ("quit", "esc"):
-                break
+                if detail_open:
+                    detail_open = False
+                else:
+                    break
 
-            if key == "down":
+            elif key == "down":
                 tasks = list_tasks()
                 if tasks:
                     selected = min(selected + 1, len(tasks) - 1)
@@ -360,36 +697,28 @@ def status_interactive(interval=2):
             elif key == "enter":
                 tasks = list_tasks()
                 if tasks and 0 <= selected < len(tasks):
-                    task = tasks[selected]
-                    tmux_session = "autopilot-%s" % task["id"]
-                    termios.tcsetattr(fd, termios.TCSADRAIN, old_settings)
-                    try:
-                        subprocess.run(
-                            ["tmux", "switch-client", "-t", tmux_session],
-                            check=True,
-                        )
-                    except subprocess.CalledProcessError:
-                        try:
-                            os.execvp("tmux", ["tmux", "attach", "-t", tmux_session])
-                        except FileNotFoundError:
-                            pass
+                    msg = _do_attach(tasks[selected])
+                    if msg:
+                        set_status(msg)
 
             elif key == "stop":
                 tasks = list_tasks()
                 if tasks and 0 <= selected < len(tasks):
-                    task = tasks[selected]
-                    if task["state"] not in ("COMPLETE", "FAILED", "STOPPED"):
-                        tmux_session = "autopilot-%s" % task["id"]
-                        try:
-                            subprocess.run(
-                                ["tmux", "kill-session", "-t", tmux_session],
-                                check=True, capture_output=True,
-                            )
-                        except (subprocess.CalledProcessError, FileNotFoundError):
-                            pass
-                        update_task(task["id"],
-                                    pre_stop_state=task["state"],
-                                    state="STOPPED")
+                    msg = _do_stop(tasks[selected])
+                    set_status(msg)
+
+            elif key == "detail":
+                detail_open = not detail_open
+
+            elif key == "logs":
+                tasks = list_tasks()
+                if tasks and 0 <= selected < len(tasks):
+                    msg = _logs_view(fd, old_settings, tasks[selected]["id"], interval)
+                    if msg:
+                        set_status(msg)
+
+            elif key == "refresh":
+                set_status("Refreshed")
 
             tick += 1
 
@@ -397,6 +726,4 @@ def status_interactive(interval=2):
         pass
     finally:
         termios.tcsetattr(fd, termios.TCSADRAIN, old_settings)
-        # Clear screen on exit
-        sys.stdout.write("\x1b[2J\x1b[H")
-        sys.stdout.flush()
+        _exit_tui()
