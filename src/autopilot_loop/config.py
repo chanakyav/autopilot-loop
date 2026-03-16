@@ -16,7 +16,7 @@ DEFAULTS = {
     "model": "claude-opus-4.6",
     "max_iterations": 5,
     "max_retries_per_phase": 1,
-    "reviewer": "Copilot",
+    "reviewer": "copilot-pull-request-reviewer[bot]",
     "review_poll_interval_seconds": 60,
     "review_timeout_seconds": 3600,
     "agent_timeout_seconds": 1800,

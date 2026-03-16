@@ -12,7 +12,7 @@ def test_defaults_returned_with_no_config_file():
     assert config["model"] == "claude-opus-4.6"
     assert config["max_iterations"] == 5
     assert config["max_retries_per_phase"] == 1
-    assert config["reviewer"] == "Copilot"
+    assert config["reviewer"] == "copilot-pull-request-reviewer[bot]"
     assert config["review_poll_interval_seconds"] == 60
     assert config["review_timeout_seconds"] == 3600
     assert config["agent_timeout_seconds"] == 1800
@@ -47,7 +47,7 @@ def test_config_file_loaded(tmp_path, monkeypatch):
         assert config["model"] == "test-model"
         assert config["max_iterations"] == 3
         # Defaults still present for unset keys
-        assert config["reviewer"] == "Copilot"
+        assert config["reviewer"] == "copilot-pull-request-reviewer[bot]"
     finally:
         config_module.CONFIG_FILENAMES = original
 

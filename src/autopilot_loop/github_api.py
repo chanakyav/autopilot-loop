@@ -119,24 +119,15 @@ def get_head_sha(branch):
 def request_copilot_review(pr_number):
     """Request a Copilot review on a PR.
 
-    Tries the API approach first, falls back to gh pr edit.
+    Uses copilot-pull-request-reviewer[bot] as the reviewer login.
+    Raises GitHubAPIError if the request fails.
     """
     nwo = get_repo_nwo()
-
-    # Try API approach
-    try:
-        _run_gh([
-            "api", "repos/%s/pulls/%d/requested_reviewers" % (nwo, pr_number),
-            "-f", "reviewers[]=Copilot",
-        ])
-        logger.info("Requested Copilot review on PR #%d via API", pr_number)
-        return
-    except GitHubAPIError as e:
-        logger.warning("API review request failed, trying gh pr edit: %s", e)
-
-    # Fallback: gh pr edit
-    _run_gh(["pr", "edit", str(pr_number), "--add-reviewer", "Copilot"])
-    logger.info("Requested Copilot review on PR #%d via gh pr edit", pr_number)
+    _run_gh([
+        "api", "repos/%s/pulls/%d/requested_reviewers" % (nwo, pr_number),
+        "-f", "reviewers[]=copilot-pull-request-reviewer[bot]",
+    ])
+    logger.info("Requested Copilot review on PR #%d", pr_number)
 
 
 def get_copilot_review(pr_number):

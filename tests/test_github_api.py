@@ -4,7 +4,6 @@ import json
 from unittest.mock import MagicMock, patch
 
 from autopilot_loop.github_api import (
-    GitHubAPIError,
     find_pr_for_branch,
     get_copilot_inline_comments,
     get_copilot_review,
@@ -52,17 +51,9 @@ class TestRequestCopilotReview:
                 "",  # API call
             ]
             request_copilot_review(42)
-
-    def test_api_fallback_to_pr_edit(self):
-        with patch("autopilot_loop.github_api._run_gh") as mock_gh:
-            mock_gh.side_effect = [
-                "github/github",  # get_repo_nwo
-                GitHubAPIError("fail"),  # API call
-                "",  # gh pr edit
-            ]
-            request_copilot_review(42)
-            # Should have called gh pr edit as fallback
-            assert mock_gh.call_count == 3
+            # Verify it used the correct bot login
+            api_call = mock_gh.call_args_list[1]
+            assert "copilot-pull-request-reviewer[bot]" in api_call[0][0][-1]
 
 
 class TestGetCopilotReview:
