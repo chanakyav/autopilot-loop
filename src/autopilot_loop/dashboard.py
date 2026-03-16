@@ -200,7 +200,8 @@ def _build_detail_panel(task):
     log_lines = _read_log_tail(task["id"], max_lines=8)
     if log_lines:
         for line in log_lines:
-            lines.append(line + "\n", style="dim")
+            lines.append_text(_style_log_line(line))
+            lines.append("\n")
     else:
         lines.append("  (no logs yet)\n", style="dim")
 
@@ -228,16 +229,64 @@ def _read_log_tail(task_id, max_lines=8):
 
 
 def _read_log_full(task_id):
-    """Read the full orchestrator log for a task."""
+    """Read the full orchestrator log for a task.
+
+    Deduplicates lines that appear twice (once from tee with short timestamp,
+    once from file handler with full timestamp). Collapses runs of 3+ blank
+    lines down to a single blank line.
+    """
     try:
         sessions_dir = get_sessions_dir(task_id)
         log_file = os.path.join(sessions_dir, "orchestrator.log")
         if not os.path.isfile(log_file):
             return []
         with open(log_file, "r") as f:
-            return [line.rstrip() for line in f.readlines()]
+            raw_lines = [line.rstrip() for line in f.readlines()]
     except (OSError, IOError):
         return []
+
+    # Deduplicate: keep the full-timestamp version (starts with 20xx-)
+    # and drop the short-timestamp duplicate
+    seen = set()
+    deduped = []
+    for line in raw_lines:
+        # Extract the content after the timestamp for comparison
+        # Full format: "2026-03-16 12:45:50,889 [INFO] [id] message"
+        # Short format: "12:45:50 [INFO] [id] message"
+        # Normalize by stripping the date prefix if present
+        normalized = line
+        if len(line) > 20 and line[:4].isdigit() and line[4] == "-":
+            # Full timestamp — extract from the time portion
+            # "2026-03-16 12:45:50,889 [INFO]..." → key on "12:45:50 [INFO]..."
+            parts = line.split(" ", 2)
+            if len(parts) >= 3:
+                # Remove milliseconds: "12:45:50,889" → "12:45:50"
+                time_part = parts[1].split(",")[0]
+                normalized = time_part + " " + parts[2]
+        elif len(line) > 8 and line[2] == ":" and line[5] == ":":
+            # Short timestamp — "12:45:50 [INFO]..."
+            time_part = line[:8]
+            normalized = time_part + " " + line[9:] if len(line) > 9 else line
+
+        if normalized in seen and line:
+            continue
+        if line:
+            seen.add(normalized)
+        deduped.append(line)
+
+    # Collapse runs of 3+ blank lines into 1
+    result = []
+    blank_count = 0
+    for line in deduped:
+        if not line.strip():
+            blank_count += 1
+            if blank_count <= 1:
+                result.append(line)
+        else:
+            blank_count = 0
+            result.append(line)
+
+    return result
 
 
 # ---------------------------------------------------------------------------
@@ -456,6 +505,58 @@ def _clear():
     sys.stdout.flush()
 
 
+def _style_log_line(line):
+    """Apply syntax highlighting to a single log line."""
+    from rich.text import Text
+
+    # Empty line
+    if not line.strip():
+        return Text("")
+
+    # State transition lines (e.g. "IMPLEMENT", "VERIFY_PR", "COMPLETE")
+    # These are lines that contain just a state name after the task ID
+    for state in ("INIT", "IMPLEMENT", "PLAN_AND_IMPLEMENT", "VERIFY_PR",
+                  "REQUEST_REVIEW", "WAIT_REVIEW", "PARSE_REVIEW", "FIX",
+                  "VERIFY_PUSH", "RESOLVE_COMMENTS", "COMPLETE", "FAILED",
+                  "STOPPED", "FETCH_ANNOTATIONS", "FIX_CI", "WAIT_CI"):
+        if line.rstrip().endswith("] %s" % state):
+            return Text(line, style="bold bright_white")
+
+    # Success lines (checkmark)
+    if "\u2713" in line or "completed successfully" in line.lower():
+        return Text(line, style="bright_green")
+
+    # Error / failure lines
+    if "[ERROR]" in line or "FAILED" in line:
+        return Text(line, style="bright_red")
+
+    # Warning lines
+    if "[WARNING]" in line:
+        return Text(line, style="yellow")
+
+    # Orchestrator info lines with timestamps
+    if "[INFO]" in line:
+        t = Text()
+        # Highlight the timestamp portion
+        bracket_idx = line.find("[INFO]")
+        if bracket_idx > 0:
+            t.append(line[:bracket_idx], style="dim")
+            t.append("[INFO]", style="dim cyan")
+            rest = line[bracket_idx + 6:]
+            # Highlight task ID in brackets
+            if rest.startswith(" [") and "]" in rest[2:]:
+                close = rest.index("]", 2)
+                t.append(rest[:close + 1], style="bold dim")
+                t.append(rest[close + 1:], style="")
+            else:
+                t.append(rest, style="")
+            return t
+        return Text(line, style="")
+
+    # Agent output (no timestamp prefix) — normal brightness
+    return Text(line, style="")
+
+
 # ---------------------------------------------------------------------------
 # Safe action handlers (never crash, always return a status message)
 # ---------------------------------------------------------------------------
@@ -538,7 +639,8 @@ def _logs_view(fd, old_settings, task_id, interval=2):
 
         log_text = Text()
         for line in visible:
-            log_text.append(line + "\n", style="dim")
+            log_text.append_text(_style_log_line(line))
+            log_text.append("\n")
 
         panel = Panel(
             log_text,
