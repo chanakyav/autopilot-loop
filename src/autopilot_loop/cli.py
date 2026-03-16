@@ -56,6 +56,49 @@ def _detect_autopilot_branch():
     return None
 
 
+def _launch_in_tmux(task_id, mode="review", branch=None, pr_number=None):
+    """Launch a task in tmux with standardized output.
+
+    Args:
+        task_id: The task ID to launch.
+        mode: Display mode ("review", "ci", "resume").
+        branch: Branch name for display.
+        pr_number: PR number for display (optional).
+    """
+    sessions_dir = get_sessions_dir(task_id)
+    log_file = os.path.join(sessions_dir, "orchestrator.log")
+    tmux_session = "autopilot-%s" % task_id
+    run_cmd = "autopilot _run --task-id %s 2>&1 | tee -a %s" % (task_id, log_file)
+
+    try:
+        subprocess.run(
+            ["tmux", "new-session", "-d", "-s", tmux_session, run_cmd],
+            check=True,
+        )
+    except FileNotFoundError:
+        logger.warning("tmux not found, running in foreground")
+        cmd_run(argparse.Namespace(task_id=task_id))
+        return
+    except subprocess.CalledProcessError as e:
+        print("Error: failed to create tmux session: %s" % e, file=sys.stderr)
+        sys.exit(1)
+
+    # Standardized output
+    print("\u2713 Autopilot session started")
+    print("  Task:     %s" % task_id)
+    print("  Mode:     %s" % mode)
+    if branch:
+        print("  Branch:   %s" % branch)
+    if pr_number:
+        print("  PR:       #%d" % pr_number)
+    print("  tmux:     %s" % tmux_session)
+    print()
+    print("  autopilot status              — check progress")
+    print("  autopilot logs --session %s  — view logs" % task_id)
+    print("  tmux attach -t %s     — attach to session" % tmux_session)
+    print("  autopilot stop %s            — stop task" % task_id)
+
+
 def cmd_start(args):
     """Start a new autopilot task."""
     config = load_config({
@@ -202,25 +245,7 @@ def cmd_resume(args):
     from autopilot_loop.persistence import update_task
     update_task(task_id, pr_number=args.pr, state="PARSE_REVIEW", branch=branch)
 
-    # Launch in tmux
-    sessions_dir = get_sessions_dir(task_id)
-    log_file = os.path.join(sessions_dir, "orchestrator.log")
-    tmux_session = "autopilot-%s" % task_id
-    run_cmd = "autopilot _run --task-id %s 2>&1 | tee -a %s" % (task_id, log_file)
-
-    try:
-        subprocess.run(
-            ["tmux", "new-session", "-d", "-s", tmux_session, run_cmd],
-            check=True,
-        )
-    except FileNotFoundError:
-        logger.warning("tmux not found, running in foreground")
-        cmd_run(argparse.Namespace(task_id=task_id))
-        return
-
-    print("✓ Resuming PR #%d as task %s" % (args.pr, task_id))
-    print("✓ Branch: %s" % branch)
-    print("✓ Running in tmux session: %s" % tmux_session)
+    _launch_in_tmux(task_id, mode="resume", branch=branch, pr_number=args.pr)
 
 
 def cmd_status(args):
@@ -384,25 +409,7 @@ def cmd_fix_ci(args):
         ci_check_names=json.dumps(check_names),
     )
 
-    # Launch in tmux
-    sessions_dir = get_sessions_dir(task_id)
-    log_file = os.path.join(sessions_dir, "orchestrator.log")
-    tmux_session = "autopilot-%s" % task_id
-    run_cmd = "autopilot _run --task-id %s 2>&1 | tee -a %s" % (task_id, log_file)
-
-    try:
-        subprocess.run(
-            ["tmux", "new-session", "-d", "-s", tmux_session, run_cmd],
-            check=True,
-        )
-    except FileNotFoundError:
-        logger.warning("tmux not found, running in foreground")
-        cmd_run(argparse.Namespace(task_id=task_id))
-        return
-
-    print("\u2713 Fixing CI on PR #%d as task %s" % (args.pr, task_id))
-    print("\u2713 Branch: %s" % branch)
-    print("\u2713 Running in tmux session: %s" % tmux_session)
+    _launch_in_tmux(task_id, mode="ci", branch=branch, pr_number=args.pr)
 
 
 def cmd_stop(args):
@@ -462,32 +469,9 @@ def cmd_restart(args):
     from autopilot_loop.persistence import update_task
     update_task(task_id, state=restart_state)
 
-    # Launch in tmux
-    sessions_dir = get_sessions_dir(task_id)
-    log_file = os.path.join(sessions_dir, "orchestrator.log")
-    tmux_session = "autopilot-%s" % task_id
-    run_cmd = "autopilot _run --task-id %s 2>&1 | tee -a %s" % (task_id, log_file)
-
-    try:
-        subprocess.run(
-            ["tmux", "new-session", "-d", "-s", tmux_session, run_cmd],
-            check=True,
-        )
-    except FileNotFoundError:
-        logger.warning("tmux not found, running in foreground")
-        cmd_run(argparse.Namespace(task_id=task_id))
-        return
-    except subprocess.CalledProcessError as e:
-        print("Error: failed to create tmux session: %s" % e, file=sys.stderr)
-        sys.exit(1)
-
-    print("✓ Restarting task %s from state %s" % (task_id, restart_state))
-    print("✓ Running in tmux session: %s" % tmux_session)
-    print()
-    print("  To check progress:  autopilot status")
-    print("  To view logs:       autopilot logs --session %s" % task_id)
-    print("  To attach to tmux:  tmux attach -t %s" % tmux_session)
-    print("  To stop:            autopilot stop %s" % task_id)
+    mode = "ci" if task.get("task_mode") == "ci" else "review"
+    _launch_in_tmux(task_id, mode="restart (%s)" % mode, branch=task.get("branch"),
+                    pr_number=task.get("pr_number"))
 
 
 def main():
