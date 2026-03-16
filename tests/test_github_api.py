@@ -133,7 +133,8 @@ class TestGetUnresolvedReviewComments:
                                     "id": "T1",
                                     "isResolved": False,
                                     "comments": {"nodes": [
-                                        {"id": "C1", "databaseId": 100, "author": {"login": "Copilot"},
+                                        {"id": "C1", "databaseId": 100,
+                                         "author": {"login": "copilot-pull-request-reviewer"},
                                          "body": "fix this", "path": "a.rb", "line": 10}
                                     ]},
                                 },
@@ -141,7 +142,8 @@ class TestGetUnresolvedReviewComments:
                                     "id": "T2",
                                     "isResolved": True,
                                     "comments": {"nodes": [
-                                        {"id": "C2", "databaseId": 200, "author": {"login": "Copilot"},
+                                        {"id": "C2", "databaseId": 200,
+                                         "author": {"login": "copilot-pull-request-reviewer"},
                                          "body": "already resolved", "path": "b.rb", "line": 20}
                                     ]},
                                 },
@@ -179,7 +181,8 @@ class TestGetUnresolvedReviewComments:
                         "reviewThreads": {
                             "nodes": [
                                 {"id": "T1", "isResolved": True, "comments": {"nodes": [
-                                    {"id": "C1", "databaseId": 100, "author": {"login": "Copilot"},
+                                    {"id": "C1", "databaseId": 100,
+                                     "author": {"login": "copilot-pull-request-reviewer"},
                                      "body": "resolved", "path": "a.rb", "line": 10}
                                 ]}},
                             ]

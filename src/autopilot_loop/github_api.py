@@ -272,8 +272,8 @@ def get_unresolved_review_comments(pr_number):
         # First comment in thread is the original review comment
         first = thread_comments[0]
         author = first.get("author", {}).get("login", "")
-        # Only include Copilot comments
-        if author not in ("Copilot", "copilot-pull-request-reviewer[bot]"):
+        # Only include Copilot comments (login varies by API: REST vs GraphQL)
+        if author not in ("Copilot", "copilot-pull-request-reviewer[bot]", "copilot-pull-request-reviewer"):
             continue
         comments.append({
             "id": first.get("databaseId"),
