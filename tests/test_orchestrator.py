@@ -265,3 +265,118 @@ class TestOrchestratorFullLoop:
         assert result["state"] == "COMPLETE"
         # Should NOT have been called — we skipped REQUEST_REVIEW
         # (no request_copilot_review mock needed = it was never called)
+
+
+class TestOrchestratorResolveComments:
+    @patch("autopilot_loop.orchestrator.resolve_review_thread")
+    @patch("autopilot_loop.orchestrator.reply_to_comment")
+    @patch("autopilot_loop.orchestrator.get_head_sha")
+    @patch("autopilot_loop.orchestrator.get_unresolved_review_comments")
+    def test_resolves_with_fix_summary(
+        self, mock_unresolved, mock_sha, mock_reply, mock_resolve, config, tmp_path,
+    ):
+        """RESOLVE_COMMENTS reads fix summary and posts correct replies."""
+        import json as _json
+        import os
+
+        mock_sha.return_value = "abc1234"
+        mock_unresolved.return_value = [
+            {"id": 10, "thread_id": "T10", "path": "a.rb", "line": 5, "body": "fix this"},
+            {"id": 20, "thread_id": "T20", "path": "b.rb", "line": 8, "body": "style nit"},
+        ]
+
+        task_id = _create_test_task()
+        persistence.update_task(task_id, pr_number=42, branch="autopilot/test1")
+        orch = Orchestrator(task_id, config)
+        orch.task = persistence.get_task(task_id)
+        orch._current_comments = mock_unresolved.return_value
+
+        # Write a fix summary file
+        summary = [
+            {"comment_id": 10, "status": "fixed", "message": "Added null check"},
+            {"comment_id": 20, "status": "skipped", "message": "Style is intentional"},
+        ]
+        summary_path = os.path.join(os.getcwd(), ".autopilot-fix-summary.json")
+        with open(summary_path, "w") as f:
+            _json.dump(summary, f)
+
+        try:
+            result = orch._do_resolve_comments()
+        finally:
+            if os.path.exists(summary_path):
+                os.remove(summary_path)
+
+        assert result == "REQUEST_REVIEW"
+        assert mock_reply.call_count == 2
+        assert mock_resolve.call_count == 2
+
+        # Check reply content
+        first_reply = mock_reply.call_args_list[0]
+        assert "Addressed" in first_reply[0][2]
+        assert "abc1234" in first_reply[0][2]
+
+        second_reply = mock_reply.call_args_list[1]
+        assert "Skipped" in second_reply[0][2]
+        assert "Style is intentional" in second_reply[0][2]
+
+    @patch("autopilot_loop.orchestrator.resolve_review_thread")
+    @patch("autopilot_loop.orchestrator.reply_to_comment")
+    @patch("autopilot_loop.orchestrator.get_head_sha")
+    @patch("autopilot_loop.orchestrator.get_unresolved_review_comments")
+    def test_resolves_without_summary_file(
+        self, mock_unresolved, mock_sha, mock_reply, mock_resolve, config,
+    ):
+        """RESOLVE_COMMENTS works even without a fix summary file (defaults to 'fixed')."""
+        mock_sha.return_value = "def5678"
+        comments = [{"id": 10, "thread_id": "T10", "path": "a.rb", "line": 5, "body": "fix"}]
+        mock_unresolved.return_value = comments
+
+        task_id = _create_test_task()
+        persistence.update_task(task_id, pr_number=42, branch="autopilot/test1")
+        orch = Orchestrator(task_id, config)
+        orch.task = persistence.get_task(task_id)
+        orch._current_comments = comments
+
+        result = orch._do_resolve_comments()
+        assert result == "REQUEST_REVIEW"
+        assert mock_reply.call_count == 1
+        assert "Addressed" in mock_reply.call_args[0][2]
+        assert mock_resolve.call_count == 1
+
+
+class TestOrchestratorVerifyPush:
+    @patch("autopilot_loop.orchestrator.get_head_sha")
+    @patch("autopilot_loop.orchestrator.verify_new_commits")
+    def test_new_commits_found(self, mock_verify, mock_sha, config):
+        mock_verify.return_value = True
+        task_id = _create_test_task()
+        persistence.update_task(task_id, branch="autopilot/test1")
+        orch = Orchestrator(task_id, config)
+        orch.task = persistence.get_task(task_id)
+        orch._pre_fix_sha = "old_sha"
+        assert orch._do_verify_push() == "RESOLVE_COMMENTS"
+
+    @patch("autopilot_loop.orchestrator.get_head_sha")
+    @patch("autopilot_loop.orchestrator.verify_new_commits")
+    def test_no_commits_retries_fix(self, mock_verify, mock_sha, config):
+        mock_verify.return_value = False
+        mock_sha.return_value = "same_sha"
+        task_id = _create_test_task()
+        persistence.update_task(task_id, branch="autopilot/test1")
+        orch = Orchestrator(task_id, config)
+        orch.task = persistence.get_task(task_id)
+        orch._pre_fix_sha = "same_sha"
+        assert orch._do_verify_push() == "FIX"
+
+    @patch("autopilot_loop.orchestrator.get_head_sha")
+    @patch("autopilot_loop.orchestrator.verify_new_commits")
+    def test_no_commits_after_retry_fails(self, mock_verify, mock_sha, config):
+        mock_verify.return_value = False
+        mock_sha.return_value = "same_sha"
+        task_id = _create_test_task()
+        persistence.update_task(task_id, branch="autopilot/test1")
+        orch = Orchestrator(task_id, config)
+        orch.task = persistence.get_task(task_id)
+        orch._pre_fix_sha = "same_sha"
+        orch._retry_counts["VERIFY_PUSH_FIX_RETRY"] = 1  # Already retried
+        assert orch._do_verify_push() == "FAILED"
