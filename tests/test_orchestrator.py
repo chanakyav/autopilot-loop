@@ -6,7 +6,7 @@ import pytest
 
 from autopilot_loop import persistence
 from autopilot_loop.agent import AgentResult
-from autopilot_loop.orchestrator import CIOrchestrator, Orchestrator
+from autopilot_loop.orchestrator import CIOrchestrator, Orchestrator, TERMINAL_STATES
 
 
 @pytest.fixture(autouse=True)
@@ -550,3 +550,51 @@ class TestCIOrchestratorFullLoop:
         orch = CIOrchestrator(task_id, config)
         result = orch.run()
         assert result["state"] == "COMPLETE"
+
+
+class TestTerminalStates:
+    def test_stopped_is_terminal(self):
+        assert "STOPPED" in TERMINAL_STATES
+
+    def test_failed_is_terminal(self):
+        assert "FAILED" in TERMINAL_STATES
+
+    def test_complete_is_terminal(self):
+        assert "COMPLETE" in TERMINAL_STATES
+
+    def test_stopped_task_does_not_run(self, config):
+        """A task in STOPPED state should be treated as terminal."""
+        task_id = _create_test_task()
+        persistence.update_task(task_id, state="STOPPED")
+        orch = Orchestrator(task_id, config)
+        result = orch.run()
+        assert result["state"] == "STOPPED"
+
+
+class TestExistingBranchImplement:
+    @patch("autopilot_loop.orchestrator.run_agent")
+    def test_existing_branch_uses_correct_prompt(self, mock_run, config):
+        """When existing_branch=1, implement uses the existing-branch prompt."""
+        mock_run.return_value = _mock_agent_result()
+        task_id = _create_test_task()
+        persistence.update_task(task_id, existing_branch=1)
+        orch = Orchestrator(task_id, config)
+        orch.task = persistence.get_task(task_id)
+        assert orch._do_implement() == "VERIFY_PR"
+
+        # Verify the prompt contains the existing-branch instruction
+        call_args = mock_run.call_args
+        prompt = call_args[1]["prompt"] if "prompt" in call_args[1] else call_args[0][0]
+        assert "Do NOT create a new branch" in prompt
+
+    @patch("autopilot_loop.orchestrator.run_agent")
+    def test_new_branch_uses_standard_prompt(self, mock_run, config):
+        """When existing_branch is not set, implement uses the standard prompt."""
+        mock_run.return_value = _mock_agent_result()
+        task_id = _create_test_task()
+        orch = Orchestrator(task_id, config)
+        assert orch._do_implement() == "VERIFY_PR"
+
+        call_args = mock_run.call_args
+        prompt = call_args[1]["prompt"] if "prompt" in call_args[1] else call_args[0][0]
+        assert "Create a new git branch" in prompt or "git checkout -b" in prompt

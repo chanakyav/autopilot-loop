@@ -6,6 +6,7 @@ on what to do, including git operations, self-review, and PR creation.
 
 __all__ = [
     "implement_prompt",
+    "implement_on_existing_branch_prompt",
     "plan_and_implement_prompt",
     "fix_prompt",
     "fix_ci_prompt",
@@ -45,6 +46,44 @@ def implement_prompt(task_description, branch_name, custom_instructions=""):
         "   examining the output. If you find any issues (bugs, missing tests, style\n"
         "   problems), fix them, commit with a descriptive message, and push again.\n"
         % (branch_name, branch_name, branch_name)
+    )
+
+    return "\n".join(parts)
+
+
+def implement_on_existing_branch_prompt(task_description, branch_name, custom_instructions=""):
+    """Prompt for the IMPLEMENT phase on an existing branch.
+
+    Used when the user starts a new task on a branch that already exists
+    (e.g. autopilot/<task-id>). The agent should NOT create a new branch
+    and should commit directly on the current branch.
+    """
+    parts = []
+
+    if custom_instructions:
+        parts.append(custom_instructions.strip())
+        parts.append("")
+
+    parts.append("## Task")
+    parts.append(task_description.strip())
+    parts.append("")
+    parts.append("## Instructions")
+    parts.append(
+        "IMPORTANT: You are on the existing branch `%s`. Do NOT create a new branch.\n"
+        "Work directly on this branch.\n\n"
+        "1. Implement the task described above.\n"
+        "2. Run any relevant tests to verify your changes work.\n"
+        "3. Stage and commit your changes with a proper, descriptive commit message\n"
+        "   that explains what was changed and why. Do NOT use generic messages.\n"
+        "4. If a PR already exists for this branch, push your changes. If no PR exists,\n"
+        "   create a draft pull request using `gh pr create --draft`. Use the repo's\n"
+        "   PR template (check `.github/PULL_REQUEST_TEMPLATE.md` or similar) to\n"
+        "   structure the PR body. Write a clear title and fill in the template sections.\n"
+        "5. Push the branch: `git push origin %s`\n"
+        "6. After pushing, review your own changes by running `git diff HEAD~1` and\n"
+        "   examining the output. If you find any issues (bugs, missing tests, style\n"
+        "   problems), fix them, commit with a descriptive message, and push again.\n"
+        % (branch_name, branch_name)
     )
 
     return "\n".join(parts)
