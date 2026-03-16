@@ -42,17 +42,27 @@ All of this runs in a tmux session. Close your laptop — it keeps going.
 ## Commands
 
 ```bash
+# Task lifecycle
 autopilot start --prompt "..."           # Start a new task
 autopilot start --prompt "..." --plan    # Let agent plan + implement
 autopilot start --issue 12345            # Start from a GitHub issue
 autopilot resume --pr 42345              # Resume from an existing PR
 autopilot fix-ci --pr 42345              # Fix CI failures (interactive check selection)
 autopilot fix-ci --pr 42345 --checks "build-ubuntu,test-integration"  # Non-interactive
-autopilot status                          # Show all task statuses
+autopilot stop abc123                     # Stop a running task
+autopilot restart abc123                  # Restart a stopped task
+
+# Monitoring
+autopilot status                          # Show all task statuses (rich table)
+autopilot status --watch                  # Auto-refreshing live dashboard
+autopilot status --json                   # JSON output for scripting
 autopilot logs                            # Show latest task log
 autopilot logs --session abc123           # Show specific task log
 autopilot logs --session abc123 --phase fix-1  # Show specific phase
-autopilot stop abc123                     # Stop a running task
+
+# Session navigation
+autopilot attach abc123                   # Attach to a task's tmux session
+autopilot next                            # Jump to next session needing attention
 ```
 
 ## Configuration
@@ -85,9 +95,26 @@ All values have sensible defaults — config file is optional.
 
 - **GitHub Codespace** with `copilot` CLI and `gh` CLI installed
 - **tmux** (pre-installed in most Codespaces; `apt install tmux` elsewhere)
-- **Python 3.8+**
+- **Python 3.8+** with `rich` (installed automatically)
 
-Codespace idle timeout is set automatically at startup (120 min default, subject to your organization's limits).
+Codespace idle timeout is checked and only extended if needed at startup.
+
+## Session Management
+
+Multiple autopilot sessions can run concurrently on different branches. Branch locking prevents two tasks from operating on the same branch.
+
+If you start a task on an existing `autopilot/*` branch, autopilot detects it and works on that branch instead of creating a new one.
+
+Stopped tasks (`autopilot stop`) are marked as `STOPPED` (not `FAILED`) and can be restarted with `autopilot restart`.
+
+### tmux Integration
+
+Add to your `~/.tmux.conf` for quick access:
+
+```bash
+bind g display-popup -E -w 80% -h 60% "autopilot status --watch"
+bind n display-popup -E -w 80% -h 60% "autopilot start --prompt ''"
+```
 
 ## Local Development
 
