@@ -297,26 +297,22 @@ def status_interactive(interval=2):
         import termios
         import tty
     except ImportError:
-        # Windows or environment without termios — fall back to passive watch
         status_watch(interval=interval)
         return
 
     from rich.console import Console, Group
-    from rich.live import Live
-
-    console = Console()
-    selected = 0
-    tick = 0
 
     fd = sys.stdin.fileno()
     try:
         old_settings = termios.tcgetattr(fd)
     except termios.error:
-        # Not a real terminal (e.g. VS Code process terminal) — fall back
         status_watch(interval=interval)
         return
 
-    def render():
+    selected = 0
+    tick = 0
+
+    def render(console):
         tasks = list_tasks()
         if not tasks:
             from rich.table import Table
@@ -330,65 +326,77 @@ def status_interactive(interval=2):
 
     try:
         tty.setraw(fd)
-        content, tasks = render()
 
-        with Live(content, console=console, screen=False, refresh_per_second=4) as live:
-            while True:
-                key = _read_key(fd, timeout=interval)
+        while True:
+            # Temporarily restore cooked mode for rendering
+            termios.tcsetattr(fd, termios.TCSADRAIN, old_settings)
 
-                if key in ("quit", "esc"):
-                    break
+            # Clear screen and move cursor to top-left
+            sys.stdout.write("\x1b[2J\x1b[H")
+            sys.stdout.flush()
 
-                if key == "down":
-                    tasks = list_tasks()
-                    if tasks:
-                        selected = min(selected + 1, len(tasks) - 1)
+            console = Console()
+            content, tasks = render(console)
+            console.print(content)
 
-                elif key == "up":
-                    tasks = list_tasks()
-                    if tasks:
-                        selected = max(selected - 1, 0)
+            # Back to raw mode for key reading
+            tty.setraw(fd)
 
-                elif key == "enter":
-                    tasks = list_tasks()
-                    if tasks and 0 <= selected < len(tasks):
-                        task = tasks[selected]
+            key = _read_key(fd, timeout=interval)
+
+            if key in ("quit", "esc"):
+                break
+
+            if key == "down":
+                tasks = list_tasks()
+                if tasks:
+                    selected = min(selected + 1, len(tasks) - 1)
+
+            elif key == "up":
+                tasks = list_tasks()
+                if tasks:
+                    selected = max(selected - 1, 0)
+
+            elif key == "enter":
+                tasks = list_tasks()
+                if tasks and 0 <= selected < len(tasks):
+                    task = tasks[selected]
+                    tmux_session = "autopilot-%s" % task["id"]
+                    termios.tcsetattr(fd, termios.TCSADRAIN, old_settings)
+                    try:
+                        subprocess.run(
+                            ["tmux", "switch-client", "-t", tmux_session],
+                            check=True,
+                        )
+                    except subprocess.CalledProcessError:
+                        try:
+                            os.execvp("tmux", ["tmux", "attach", "-t", tmux_session])
+                        except FileNotFoundError:
+                            pass
+
+            elif key == "stop":
+                tasks = list_tasks()
+                if tasks and 0 <= selected < len(tasks):
+                    task = tasks[selected]
+                    if task["state"] not in ("COMPLETE", "FAILED", "STOPPED"):
                         tmux_session = "autopilot-%s" % task["id"]
-                        termios.tcsetattr(fd, termios.TCSADRAIN, old_settings)
                         try:
                             subprocess.run(
-                                ["tmux", "switch-client", "-t", tmux_session],
-                                check=True,
+                                ["tmux", "kill-session", "-t", tmux_session],
+                                check=True, capture_output=True,
                             )
-                        except subprocess.CalledProcessError:
-                            try:
-                                os.execvp("tmux", ["tmux", "attach", "-t", tmux_session])
-                            except FileNotFoundError:
-                                pass
-                        tty.setraw(fd)
+                        except (subprocess.CalledProcessError, FileNotFoundError):
+                            pass
+                        update_task(task["id"],
+                                    pre_stop_state=task["state"],
+                                    state="STOPPED")
 
-                elif key == "stop":
-                    tasks = list_tasks()
-                    if tasks and 0 <= selected < len(tasks):
-                        task = tasks[selected]
-                        if task["state"] not in ("COMPLETE", "FAILED", "STOPPED"):
-                            tmux_session = "autopilot-%s" % task["id"]
-                            try:
-                                subprocess.run(
-                                    ["tmux", "kill-session", "-t", tmux_session],
-                                    check=True, capture_output=True,
-                                )
-                            except (subprocess.CalledProcessError, FileNotFoundError):
-                                pass
-                            update_task(task["id"],
-                                        pre_stop_state=task["state"],
-                                        state="STOPPED")
-
-                tick += 1
-                content, tasks = render()
-                live.update(content)
+            tick += 1
 
     except KeyboardInterrupt:
         pass
     finally:
         termios.tcsetattr(fd, termios.TCSADRAIN, old_settings)
+        # Clear screen on exit
+        sys.stdout.write("\x1b[2J\x1b[H")
+        sys.stdout.flush()
