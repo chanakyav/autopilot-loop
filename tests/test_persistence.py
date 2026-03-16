@@ -118,6 +118,46 @@ def test_existing_branch_defaults_to_zero():
     assert task["existing_branch"] == 0
 
 
+def test_get_active_tasks():
+    persistence.create_task("t1", "prompt")
+    persistence.create_task("t2", "prompt")
+    persistence.create_task("t3", "prompt")
+    persistence.update_task("t1", state="IMPLEMENT", branch="autopilot/t1")
+    persistence.update_task("t2", state="COMPLETE", branch="autopilot/t2")
+    persistence.update_task("t3", state="FIX", branch="autopilot/t3")
+    active = persistence.get_active_tasks()
+    ids = [t["id"] for t in active]
+    assert "t1" in ids
+    assert "t3" in ids
+    assert "t2" not in ids
+
+
+def test_get_active_tasks_excludes_stopped_and_failed():
+    persistence.create_task("t1", "prompt")
+    persistence.create_task("t2", "prompt")
+    persistence.update_task("t1", state="STOPPED")
+    persistence.update_task("t2", state="FAILED")
+    active = persistence.get_active_tasks()
+    assert len(active) == 0
+
+
+def test_get_tasks_on_branch():
+    persistence.create_task("t1", "prompt")
+    persistence.create_task("t2", "prompt")
+    persistence.update_task("t1", state="IMPLEMENT", branch="autopilot/shared")
+    persistence.update_task("t2", state="FIX", branch="autopilot/other")
+    tasks = persistence.get_tasks_on_branch("autopilot/shared")
+    assert len(tasks) == 1
+    assert tasks[0]["id"] == "t1"
+
+
+def test_get_tasks_on_branch_excludes_terminal():
+    persistence.create_task("t1", "prompt")
+    persistence.update_task("t1", state="COMPLETE", branch="autopilot/done")
+    tasks = persistence.get_tasks_on_branch("autopilot/done")
+    assert len(tasks) == 0
+
+
 def test_last_review_id_persisted():
     persistence.create_task("t1", "prompt")
     task = persistence.get_task("t1")

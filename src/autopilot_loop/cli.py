@@ -15,8 +15,10 @@ import uuid
 from autopilot_loop.config import load_config
 from autopilot_loop.persistence import (
     create_task,
+    get_active_tasks,
     get_sessions_dir,
     get_task,
+    get_tasks_on_branch,
     list_tasks,
 )
 
@@ -126,6 +128,15 @@ def cmd_start(args):
         logger.info("Detected existing autopilot branch: %s", branch)
     else:
         branch = config["branch_pattern"].format(task_id=task_id)
+
+    # Branch locking: prevent concurrent tasks on the same branch
+    conflicting = get_tasks_on_branch(branch)
+    if conflicting:
+        print("Error: branch %s already has an active task: %s (state: %s)" % (
+            branch, conflicting[0]["id"], conflicting[0]["state"]), file=sys.stderr)
+        print("Use 'autopilot stop %s' first, or work on a different branch." % conflicting[0]["id"],
+              file=sys.stderr)
+        sys.exit(1)
 
     create_task(
         task_id=task_id,
@@ -250,25 +261,213 @@ def cmd_resume(args):
 
 def cmd_status(args):
     """Show status of all autopilot tasks."""
-    tasks = list_tasks()
+    if getattr(args, "json", False):
+        _status_json()
+        return
 
+    if getattr(args, "watch", False):
+        _status_watch(interval=getattr(args, "interval", 5))
+        return
+
+    _status_table()
+
+
+def _format_elapsed(created_at):
+    elapsed = time.time() - created_at
+    if elapsed < 60:
+        return "< 1m"
+    elif elapsed < 3600:
+        return "%dm ago" % (elapsed / 60)
+    else:
+        return "%.1fh ago" % (elapsed / 3600)
+
+
+_STATE_STYLES = {
+    "COMPLETE": "green",
+    "FAILED": "red",
+    "STOPPED": "yellow",
+    "WAIT_REVIEW": "cyan",
+    "WAIT_CI": "cyan",
+    "IMPLEMENT": "blue",
+    "PLAN_AND_IMPLEMENT": "blue",
+    "FIX": "magenta",
+    "FIX_CI": "magenta",
+}
+
+_STATE_INDICATORS = {
+    "COMPLETE": "✓",
+    "FAILED": "✗",
+    "STOPPED": "■",
+}
+
+
+def _status_table():
+    """Print a rich table of all tasks."""
+    from rich.console import Console
+    from rich.table import Table
+
+    tasks = list_tasks()
     if not tasks:
         print("No tasks found.")
         return
 
-    # Header
-    print("%-10s %-18s %-8s %-11s %s" % ("TASK_ID", "STATE", "PR", "ITERATION", "STARTED"))
-    print("-" * 65)
+    console = Console()
+    table = Table(title="autopilot-loop — Sessions", border_style="dim")
+    table.add_column("#", style="dim", width=3)
+    table.add_column("Task ID", style="bold")
+    table.add_column("Mode")
+    table.add_column("Branch")
+    table.add_column("State")
+    table.add_column("PR")
+    table.add_column("Iter")
+    table.add_column("Elapsed", justify="right")
 
-    for t in tasks:
+    for i, t in enumerate(tasks, 1):
+        state = t["state"]
+        style = _STATE_STYLES.get(state, "")
+        indicator = _STATE_INDICATORS.get(state, "●")
+        state_display = "%s %s" % (indicator, state)
         pr = "#%d" % t["pr_number"] if t["pr_number"] else "-"
         iteration = "%d/%d" % (t["iteration"], t["max_iterations"])
-        elapsed = time.time() - t["created_at"]
-        if elapsed < 3600:
-            started = "%dm ago" % (elapsed / 60)
-        else:
-            started = "%.1fh ago" % (elapsed / 3600)
-        print("%-10s %-18s %-8s %-11s %s" % (t["id"], t["state"], pr, iteration, started))
+        mode = t.get("task_mode", "review")
+        branch = t.get("branch") or "-"
+        # Truncate long branch names
+        if len(branch) > 30:
+            branch = branch[:27] + "..."
+        elapsed = _format_elapsed(t["created_at"])
+
+        table.add_row(
+            str(i), t["id"], mode, branch,
+            "[%s]%s[/]" % (style, state_display) if style else state_display,
+            pr, iteration, elapsed,
+        )
+
+    console.print(table)
+
+    # Show active count
+    active = get_active_tasks()
+    if active:
+        console.print("\\n[dim]%d active session(s)[/dim]" % len(active))
+
+
+def _status_json():
+    """Print task status as JSON."""
+    tasks = list_tasks()
+    output = []
+    for t in tasks:
+        output.append({
+            "id": t["id"],
+            "state": t["state"],
+            "mode": t.get("task_mode", "review"),
+            "branch": t.get("branch"),
+            "pr_number": t.get("pr_number"),
+            "iteration": t["iteration"],
+            "max_iterations": t["max_iterations"],
+            "elapsed_seconds": round(time.time() - t["created_at"]),
+        })
+    print(json.dumps(output, indent=2))
+
+
+def _status_watch(interval=5):
+    """Auto-refreshing status display."""
+    from rich.console import Console
+    from rich.live import Live
+    from rich.table import Table
+
+    console = Console()
+
+    def build_table():
+        tasks = list_tasks()
+        if not tasks:
+            table = Table(title="autopilot-loop — No sessions")
+            return table
+
+        table = Table(title="autopilot-loop — Sessions (refreshing every %ds)" % interval,
+                      border_style="dim")
+        table.add_column("#", style="dim", width=3)
+        table.add_column("Task ID", style="bold")
+        table.add_column("Mode")
+        table.add_column("Branch")
+        table.add_column("State")
+        table.add_column("PR")
+        table.add_column("Iter")
+        table.add_column("Elapsed", justify="right")
+
+        for i, t in enumerate(tasks, 1):
+            state = t["state"]
+            style = _STATE_STYLES.get(state, "")
+            indicator = _STATE_INDICATORS.get(state, "●")
+            state_display = "%s %s" % (indicator, state)
+            pr = "#%d" % t["pr_number"] if t["pr_number"] else "-"
+            iteration = "%d/%d" % (t["iteration"], t["max_iterations"])
+            mode = t.get("task_mode", "review")
+            branch = t.get("branch") or "-"
+            if len(branch) > 30:
+                branch = branch[:27] + "..."
+            elapsed = _format_elapsed(t["created_at"])
+
+            table.add_row(
+                str(i), t["id"], mode, branch,
+                "[%s]%s[/]" % (style, state_display) if style else state_display,
+                pr, iteration, elapsed,
+            )
+        return table
+
+    try:
+        with Live(build_table(), console=console, refresh_per_second=1) as live:
+            while True:
+                time.sleep(interval)
+                live.update(build_table())
+    except KeyboardInterrupt:
+        pass
+
+
+def cmd_attach(args):
+    """Attach to a task's tmux session."""
+    task_id = args.task_id
+    task = get_task(task_id)
+    if not task:
+        print("Error: task %s not found" % task_id, file=sys.stderr)
+        sys.exit(1)
+
+    tmux_session = "autopilot-%s" % task_id
+    try:
+        subprocess.run(["tmux", "switch-client", "-t", tmux_session], check=True)
+    except subprocess.CalledProcessError:
+        # Not inside tmux — try attach instead
+        try:
+            os.execvp("tmux", ["tmux", "attach", "-t", tmux_session])
+        except FileNotFoundError:
+            print("Error: tmux not found", file=sys.stderr)
+            sys.exit(1)
+
+
+def cmd_next(args):
+    """Jump to the next session needing attention (STOPPED, FAILED, or input-waiting)."""
+    tasks = list_tasks()
+    # Priority: STOPPED > FAILED > active states needing attention
+    attention_states = ["STOPPED", "FAILED"]
+    for state in attention_states:
+        for t in tasks:
+            if t["state"] == state:
+                tmux_session = "autopilot-%s" % t["id"]
+                print("Switching to task %s (state: %s)" % (t["id"], state))
+                try:
+                    subprocess.run(["tmux", "switch-client", "-t", tmux_session], check=True)
+                    return
+                except subprocess.CalledProcessError:
+                    try:
+                        os.execvp("tmux", ["tmux", "attach", "-t", tmux_session])
+                    except FileNotFoundError:
+                        print("Error: tmux not found", file=sys.stderr)
+                        sys.exit(1)
+
+    # No sessions needing attention
+    active = get_active_tasks()
+    if active:
+        print("No sessions need attention. %d active session(s) running." % len(active))
+    else:
+        print("No active sessions.")
 
 
 def cmd_logs(args):
@@ -494,7 +693,10 @@ def main():
     p_resume.add_argument("--pr", type=int, required=True, help="PR number to resume")
 
     # status
-    subparsers.add_parser("status", help="Show task status")
+    p_status = subparsers.add_parser("status", help="Show task status")
+    p_status.add_argument("--watch", "-w", action="store_true", help="Auto-refresh status display")
+    p_status.add_argument("--json", action="store_true", help="Output as JSON")
+    p_status.add_argument("--interval", type=int, default=5, help="Refresh interval in seconds (with --watch)")
 
     # logs
     p_logs = subparsers.add_parser("logs", help="Show task logs")
@@ -515,6 +717,13 @@ def main():
     p_fixci.add_argument("--checks", type=str, help="Comma-separated check names (substring match)")
     p_fixci.add_argument("--max-iters", type=int, help="Max fix iterations")
     p_fixci.add_argument("--model", type=str, help="Model override")
+
+    # attach
+    p_attach = subparsers.add_parser("attach", help="Attach to a task's tmux session")
+    p_attach.add_argument("task_id", type=str, help="Task ID to attach to")
+
+    # next
+    subparsers.add_parser("next", help="Jump to next session needing attention")
 
     # _run (internal, called from tmux)
     p_run = subparsers.add_parser("_run", help=argparse.SUPPRESS)
@@ -537,6 +746,10 @@ def main():
         cmd_restart(args)
     elif args.command == "fix-ci":
         cmd_fix_ci(args)
+    elif args.command == "attach":
+        cmd_attach(args)
+    elif args.command == "next":
+        cmd_next(args)
     elif args.command == "_run":
         cmd_run(args)
     else:
