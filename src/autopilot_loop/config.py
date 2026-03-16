@@ -25,6 +25,9 @@ DEFAULTS = {
     "keepalive_interval_seconds": 300,
     "branch_pattern": "autopilot/{task_id}",
     "custom_instructions": "",
+    "ci_check_names": [],
+    "ci_poll_interval_seconds": 120,
+    "ci_poll_timeout_seconds": 5400,
 }
 
 CONFIG_FILENAMES = [

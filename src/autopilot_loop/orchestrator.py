@@ -1,8 +1,11 @@
-"""Core state machine orchestrator.
+"""Core state machine orchestrators.
 
-Manages the full lifecycle: INIT → IMPLEMENT → VERIFY_PR → REQUEST_REVIEW →
+Orchestrator: INIT → IMPLEMENT → VERIFY_PR → REQUEST_REVIEW →
 WAIT_REVIEW → PARSE_REVIEW → FIX → VERIFY_PUSH → RESOLVE_COMMENTS →
 REQUEST_REVIEW → ... → COMPLETE.
+
+CIOrchestrator: INIT → FETCH_ANNOTATIONS → FIX_CI → VERIFY_PUSH →
+WAIT_CI → FETCH_ANNOTATIONS → ... → COMPLETE.
 """
 
 import json
@@ -14,7 +17,10 @@ from autopilot_loop.agent import run_agent
 from autopilot_loop.codespace import set_idle_timeout
 from autopilot_loop.github_api import (
     find_pr_for_branch,
+    get_check_annotations,
+    get_check_states,
     get_copilot_review,
+    get_failed_checks,
     get_head_sha,
     get_unresolved_review_comments,
     is_copilot_review_complete,
@@ -31,7 +37,9 @@ from autopilot_loop.persistence import (
     update_task,
 )
 from autopilot_loop.prompts import (
+    fix_ci_prompt,
     fix_prompt,
+    format_ci_annotations_for_prompt,
     format_review_for_prompt,
     implement_prompt,
     plan_and_implement_prompt,
@@ -39,7 +47,7 @@ from autopilot_loop.prompts import (
 
 logger = logging.getLogger(__name__)
 
-__all__ = ["Orchestrator"]
+__all__ = ["Orchestrator", "CIOrchestrator"]
 
 # Valid state transitions
 STATES = [
@@ -58,8 +66,8 @@ STATES = [
 ]
 
 
-class Orchestrator:
-    """State machine orchestrator for the autopilot loop."""
+class BaseOrchestrator:
+    """Shared infrastructure for state machine orchestrators."""
 
     def __init__(self, task_id, config):
         self.task_id = task_id
@@ -67,7 +75,10 @@ class Orchestrator:
         self.task = get_task(task_id)
         self.sessions_dir = get_sessions_dir(task_id)
         self._retry_counts = {}  # phase -> retry count
-        self._last_review_id = self.task.get("last_review_id")  # restore from DB
+
+    def _get_handlers(self):
+        """Return a dict mapping state names to handler methods. Subclasses must override."""
+        raise NotImplementedError
 
     def run(self):
         """Run the state machine until COMPLETE or FAILED."""
@@ -90,41 +101,29 @@ class Orchestrator:
 
     def _transition(self, state):
         """Execute the current state and return the next state."""
-        handler = {
-            "INIT": self._do_init,
-            "PLAN_AND_IMPLEMENT": self._do_plan_and_implement,
-            "IMPLEMENT": self._do_implement,
-            "VERIFY_PR": self._do_verify_pr,
-            "REQUEST_REVIEW": self._do_request_review,
-            "WAIT_REVIEW": self._do_wait_review,
-            "PARSE_REVIEW": self._do_parse_review,
-            "FIX": self._do_fix,
-            "VERIFY_PUSH": self._do_verify_push,
-            "RESOLVE_COMMENTS": self._do_resolve_comments,
-        }.get(state)
-
+        handler = self._get_handlers().get(state)
         if handler is None:
             logger.error("[%s] Unknown state: %s", self.task_id, state)
             return "FAILED"
-
         return handler()
 
     def _do_init(self):
         """Validate config, create session dir, set codespace idle timeout."""
-        logger.info("[%s] INIT → Validated config, created session dir", self.task_id)
+        logger.info("[%s] INIT \u2192 Validated config, created session dir", self.task_id)
 
         # Set codespace idle timeout (non-fatal)
         try:
             set_idle_timeout(self.config.get("idle_timeout_minutes", 120))
-            logger.info("[%s] ✓ Codespace idle timeout set to %d minutes",
+            logger.info("[%s] \u2713 Codespace idle timeout set to %d minutes",
                         self.task_id, self.config.get("idle_timeout_minutes", 120))
         except Exception as e:
             logger.warning("[%s] Could not set codespace idle timeout: %s", self.task_id, e)
 
-        # Determine next state
-        if self.task.get("plan_mode"):
-            return "PLAN_AND_IMPLEMENT"
-        return "IMPLEMENT"
+        return self._init_next_state()
+
+    def _init_next_state(self):
+        """Return the state to transition to after INIT. Subclasses must override."""
+        raise NotImplementedError
 
     def _run_agent_with_retry(self, phase, prompt, session_name):
         """Run an agent with retry policy.
@@ -185,6 +184,72 @@ class Orchestrator:
         )
         return None
 
+    def _do_verify_push(self):
+        """Verify new commits were pushed after fix."""
+        branch = self.task["branch"]
+        pre_sha = getattr(self, "_pre_fix_sha", None)
+
+        if pre_sha and verify_new_commits(branch, pre_sha):
+            logger.info("[%s] \u2713 New commits found on %s", self.task_id, branch)
+            return self._after_verify_push()
+
+        # Maybe the agent already pushed and we just need to check
+        new_sha = get_head_sha(branch)
+        if new_sha and new_sha != pre_sha:
+            logger.info("[%s] \u2713 New commits found on %s", self.task_id, branch)
+            return self._after_verify_push()
+
+        # No new commits \u2014 retry FIX once
+        retry_key = "VERIFY_PUSH_FIX_RETRY"
+        if self._retry_counts.get(retry_key, 0) > 0:
+            logger.error("[%s] No new commits on %s after fix retry", self.task_id, branch)
+            return "FAILED"
+
+        logger.warning("[%s] No new commits on %s, retrying fix", self.task_id, branch)
+        self._retry_counts[retry_key] = 1
+        return self._retry_fix_state()
+
+    def _after_verify_push(self):
+        """State to transition to after VERIFY_PUSH succeeds. Subclasses must override."""
+        raise NotImplementedError
+
+    def _retry_fix_state(self):
+        """State to retry when VERIFY_PUSH finds no new commits. Subclasses must override."""
+        raise NotImplementedError
+
+
+class Orchestrator(BaseOrchestrator):
+    """State machine orchestrator for the review-fix autopilot loop."""
+
+    def __init__(self, task_id, config):
+        super().__init__(task_id, config)
+        self._last_review_id = self.task.get("last_review_id")  # restore from DB
+
+    def _get_handlers(self):
+        return {
+            "INIT": self._do_init,
+            "PLAN_AND_IMPLEMENT": self._do_plan_and_implement,
+            "IMPLEMENT": self._do_implement,
+            "VERIFY_PR": self._do_verify_pr,
+            "REQUEST_REVIEW": self._do_request_review,
+            "WAIT_REVIEW": self._do_wait_review,
+            "PARSE_REVIEW": self._do_parse_review,
+            "FIX": self._do_fix,
+            "VERIFY_PUSH": self._do_verify_push,
+            "RESOLVE_COMMENTS": self._do_resolve_comments,
+        }
+
+    def _init_next_state(self):
+        if self.task.get("plan_mode"):
+            return "PLAN_AND_IMPLEMENT"
+        return "IMPLEMENT"
+
+    def _after_verify_push(self):
+        return "RESOLVE_COMMENTS"
+
+    def _retry_fix_state(self):
+        return "FIX"
+
     def _do_implement(self):
         """Run copilot agent with implement prompt."""
         branch = self.task["branch"]
@@ -198,7 +263,7 @@ class Orchestrator:
         if result is None:
             return "FAILED"
 
-        logger.info("[%s] ✓ Agent completed (exit %d, %.1fs)", self.task_id, result.exit_code, result.duration)
+        logger.info("[%s] \u2713 Agent completed (exit %d, %.1fs)", self.task_id, result.exit_code, result.duration)
         return "VERIFY_PR"
 
     def _do_plan_and_implement(self):
@@ -214,7 +279,7 @@ class Orchestrator:
         if result is None:
             return "FAILED"
 
-        logger.info("[%s] ✓ Agent completed (exit %d, %.1fs)", self.task_id, result.exit_code, result.duration)
+        logger.info("[%s] \u2713 Agent completed (exit %d, %.1fs)", self.task_id, result.exit_code, result.duration)
         return "VERIFY_PR"
 
     def _do_verify_pr(self):
@@ -376,33 +441,8 @@ class Orchestrator:
         if result is None:
             return "FAILED"
 
-        logger.info("[%s] ✓ Fix agent completed (exit %d, %.1fs)", self.task_id, result.exit_code, result.duration)
+        logger.info("[%s] \u2713 Fix agent completed (exit %d, %.1fs)", self.task_id, result.exit_code, result.duration)
         return "VERIFY_PUSH"
-
-    def _do_verify_push(self):
-        """Verify new commits were pushed after fix."""
-        branch = self.task["branch"]
-        pre_sha = getattr(self, "_pre_fix_sha", None)
-
-        if pre_sha and verify_new_commits(branch, pre_sha):
-            logger.info("[%s] ✓ New commits found on %s", self.task_id, branch)
-            return "RESOLVE_COMMENTS"
-
-        # Maybe the agent already pushed and we just need to check
-        new_sha = get_head_sha(branch)
-        if new_sha and new_sha != pre_sha:
-            logger.info("[%s] ✓ New commits found on %s", self.task_id, branch)
-            return "RESOLVE_COMMENTS"
-
-        # No new commits — retry FIX once
-        retry_key = "VERIFY_PUSH_FIX_RETRY"
-        if self._retry_counts.get(retry_key, 0) > 0:
-            logger.error("[%s] No new commits on %s after fix retry", self.task_id, branch)
-            return "FAILED"
-
-        logger.warning("[%s] No new commits on %s, retrying FIX", self.task_id, branch)
-        self._retry_counts[retry_key] = 1
-        return "FIX"
 
     def _do_resolve_comments(self):
         """Reply to and resolve review comments based on fix summary."""
@@ -474,5 +514,161 @@ class Orchestrator:
             except Exception as e:
                 logger.warning("[%s] Failed to resolve comment %d: %s", self.task_id, comment_id, e)
 
-        logger.info("[%s] ✓ Resolved %d/%d comments", self.task_id, resolved_count, len(comments))
+        logger.info("[%s] \u2713 Resolved %d/%d comments", self.task_id, resolved_count, len(comments))
         return "REQUEST_REVIEW"
+
+
+class CIOrchestrator(BaseOrchestrator):
+    """State machine orchestrator for fixing CI failures.
+
+    Loop: INIT → FETCH_ANNOTATIONS → FIX_CI → VERIFY_PUSH → WAIT_CI →
+    FETCH_ANNOTATIONS → ... → COMPLETE.
+    """
+
+    def _get_handlers(self):
+        return {
+            "INIT": self._do_init,
+            "FETCH_ANNOTATIONS": self._do_fetch_annotations,
+            "FIX_CI": self._do_fix_ci,
+            "VERIFY_PUSH": self._do_verify_push,
+            "WAIT_CI": self._do_wait_ci,
+        }
+
+    def _init_next_state(self):
+        return "FETCH_ANNOTATIONS"
+
+    def _after_verify_push(self):
+        return "WAIT_CI"
+
+    def _retry_fix_state(self):
+        return "FIX_CI"
+
+    def _do_fetch_annotations(self):
+        """Fetch failure annotations for the selected CI checks."""
+        pr_number = self.task["pr_number"]
+        iteration = self.task["iteration"] + 1
+        max_iterations = self.task["max_iterations"]
+
+        # Get the user-selected check names from the task
+        ci_check_names = json.loads(self.task.get("ci_check_names") or "[]")
+        if not ci_check_names:
+            logger.error("[%s] No CI check names configured", self.task_id)
+            return "FAILED"
+
+        # Get current failed checks to find job IDs
+        all_failed = get_failed_checks(pr_number)
+        selected = [c for c in all_failed if c["name"] in ci_check_names]
+
+        # Collect job IDs for annotation fetching
+        job_ids = [c["job_id"] for c in selected if c.get("job_id")]
+
+        if not job_ids:
+            # Check if the selected checks are now passing
+            states = get_check_states(pr_number, ci_check_names)
+            all_passing = all(s == "SUCCESS" for s in states.values())
+            if all_passing:
+                logger.info("[%s] \u2713 All selected checks are passing!", self.task_id)
+                return "COMPLETE"
+
+            # Checks are in a non-failure state (pending, etc.) or have no job IDs
+            logger.warning("[%s] No job IDs found for selected checks. States: %s", self.task_id, states)
+            return "COMPLETE"
+
+        annotations = get_check_annotations(job_ids)
+
+        # Save annotation data
+        ann_file = os.path.join(self.sessions_dir, "ci-annotations-%d.json" % iteration)
+        with open(ann_file, "w") as f:
+            json.dump(annotations, f, indent=2)
+
+        update_task(self.task_id, iteration=iteration)
+
+        if not annotations:
+            logger.info("[%s] \u2713 No actionable CI annotations found", self.task_id)
+            return "COMPLETE"
+
+        logger.info("[%s] %d CI failure annotations found:", self.task_id, len(annotations))
+        for i, a in enumerate(annotations, 1):
+            logger.info("[%s]   %d. %s:%s \u2014 %s",
+                        self.task_id, i, a.get("path", "?"), a.get("start_line", "?"),
+                        a.get("title", "")[:80])
+
+        if iteration >= max_iterations:
+            logger.warning(
+                "[%s] Reached max iterations (%d/%d) with %d CI failures remaining",
+                self.task_id, iteration, max_iterations, len(annotations),
+            )
+            return "COMPLETE"
+
+        # Store for FIX_CI
+        self._current_annotations = annotations
+        return "FIX_CI"
+
+    def _do_fix_ci(self):
+        """Run copilot agent to fix CI failures."""
+        iteration = self.task["iteration"]
+
+        annotations = getattr(self, "_current_annotations", None)
+        if annotations is None:
+            # Re-fetch if not cached (e.g., after restart)
+            ci_check_names = json.loads(self.task.get("ci_check_names") or "[]")
+            all_failed = get_failed_checks(self.task["pr_number"])
+            selected = [c for c in all_failed if c["name"] in ci_check_names]
+            job_ids = [c["job_id"] for c in selected if c.get("job_id")]
+            annotations = get_check_annotations(job_ids)
+
+        annotations_text = format_ci_annotations_for_prompt(annotations)
+        prompt = fix_ci_prompt(
+            ci_annotations_text=annotations_text,
+            custom_instructions=self.config.get("custom_instructions", ""),
+        )
+
+        self._pre_fix_sha = get_head_sha(self.task["branch"])
+
+        result = self._run_agent_with_retry("FIX_CI", prompt, "fix-ci-%d" % iteration)
+        if result is None:
+            return "FAILED"
+
+        logger.info("[%s] \u2713 CI fix agent completed (exit %d, %.1fs)",
+                    self.task_id, result.exit_code, result.duration)
+        return "VERIFY_PUSH"
+
+    def _do_wait_ci(self):
+        """Poll selected CI checks until they pass or timeout."""
+        pr_number = self.task["pr_number"]
+        ci_check_names = json.loads(self.task.get("ci_check_names") or "[]")
+        poll_interval = self.config.get("ci_poll_interval_seconds", 120)
+        timeout = self.config.get("ci_poll_timeout_seconds", 5400)
+        start_time = time.time()
+
+        logger.info("[%s] Polling %d checks every %ds (timeout: %ds)...",
+                    self.task_id, len(ci_check_names), poll_interval, timeout)
+
+        while True:
+            elapsed = time.time() - start_time
+            if elapsed > timeout:
+                logger.warning(
+                    "[%s] CI poll timed out after %ds",
+                    self.task_id, timeout,
+                )
+                return "COMPLETE"
+
+            states = get_check_states(pr_number, ci_check_names)
+
+            # Check if all selected checks have completed
+            pending = [n for n, s in states.items() if s not in ("SUCCESS", "FAILURE", "ERROR")]
+            failed = [n for n, s in states.items() if s in ("FAILURE", "ERROR")]
+            passed = [n for n, s in states.items() if s == "SUCCESS"]
+
+            if not pending:
+                if not failed:
+                    logger.info("[%s] \u2713 All %d selected checks passed!", self.task_id, len(passed))
+                    return "COMPLETE"
+                else:
+                    logger.info("[%s] %d checks still failing: %s",
+                                self.task_id, len(failed), ", ".join(failed))
+                    return "FETCH_ANNOTATIONS"
+
+            logger.debug("[%s] %d checks pending, %d passed, %d failed (%.0f/%ds elapsed)",
+                         self.task_id, len(pending), len(passed), len(failed), elapsed, timeout)
+            time.sleep(poll_interval)

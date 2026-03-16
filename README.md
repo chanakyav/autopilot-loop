@@ -46,6 +46,8 @@ autopilot start --prompt "..."           # Start a new task
 autopilot start --prompt "..." --plan    # Let agent plan + implement
 autopilot start --issue 12345            # Start from a GitHub issue
 autopilot resume --pr 42345              # Resume from an existing PR
+autopilot fix-ci --pr 42345              # Fix CI failures (interactive check selection)
+autopilot fix-ci --pr 42345 --checks "build-ubuntu,test-integration"  # Non-interactive
 autopilot status                          # Show all task statuses
 autopilot logs                            # Show latest task log
 autopilot logs --session abc123           # Show specific task log
@@ -70,7 +72,10 @@ Create `autopilot.json` in your repo root or `~/.autopilot-loop/config.json`:
   "keepalive_enabled": false,
   "keepalive_interval_seconds": 300,
   "branch_pattern": "autopilot/{task_id}",
-  "custom_instructions": "Run tests with: bin/rails test <path>\nRun linting with: bin/rubocop <path>"
+  "custom_instructions": "Run tests with: npm test\nRun linting with: npm run lint",
+  "ci_check_names": [],
+  "ci_poll_interval_seconds": 120,
+  "ci_poll_timeout_seconds": 5400
 }
 ```
 
@@ -82,7 +87,7 @@ All values have sensible defaults — config file is optional.
 - **tmux** (pre-installed in most Codespaces; `apt install tmux` elsewhere)
 - **Python 3.8+**
 
-Codespace idle timeout is set automatically at startup (120 min, org-capped).
+Codespace idle timeout is set automatically at startup (120 min default, subject to your organization's limits).
 
 ## Local Development
 

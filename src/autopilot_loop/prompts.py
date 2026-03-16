@@ -8,7 +8,9 @@ __all__ = [
     "implement_prompt",
     "plan_and_implement_prompt",
     "fix_prompt",
+    "fix_ci_prompt",
     "format_review_for_prompt",
+    "format_ci_annotations_for_prompt",
 ]
 
 
@@ -167,5 +169,73 @@ def format_review_for_prompt(review_body, inline_comments):
             parts.append("")
     else:
         parts.append("No inline comments.")
+
+    return "\n".join(parts)
+
+
+def fix_ci_prompt(ci_annotations_text, custom_instructions=""):
+    """Prompt for the FIX_CI phase.
+
+    Agent fixes CI failures based on annotations, runs the full test suite,
+    commits, and pushes.
+    """
+    parts = []
+
+    if custom_instructions:
+        parts.append(custom_instructions.strip())
+        parts.append("")
+
+    parts.append("## CI Failures to Fix")
+    parts.append("")
+    parts.append(ci_annotations_text.strip())
+    parts.append("")
+    parts.append("## Instructions")
+    parts.append(
+        "1. Read each CI failure above. The path and line number point to the\n"
+        "   exact location of the failure. Open the file and understand what broke.\n"
+        "2. Fix the root cause. If multiple failures share the same root cause\n"
+        "   (e.g., a missing test case for a new route), fix it once.\n"
+        "3. Run the full test suite to verify your fixes don't break anything \u2014\n"
+        "   not just the tests that failed. Adjacent test files often break too.\n"
+        "4. Commit with a descriptive message that explains what CI failures\n"
+        "   were addressed. Do NOT use generic messages like 'fix CI'.\n"
+        "   Instead, describe the specific changes.\n"
+        "5. Push the changes.\n"
+        "6. After pushing, review your own fix by running `git diff HEAD~1` and\n"
+        "   examining the output. If you introduced any new issues, fix them,\n"
+        "   commit, and push again.\n"
+    )
+
+    return "\n".join(parts)
+
+
+def format_ci_annotations_for_prompt(annotations):
+    """Format CI failure annotations for the fix_ci prompt.
+
+    Args:
+        annotations: List of dicts with {path, start_line, end_line, title, message}.
+
+    Returns:
+        Formatted string ready to embed in the fix_ci prompt.
+    """
+    if not annotations:
+        return "No CI failure annotations found."
+
+    parts = ["### CI Failure Annotations (%d)" % len(annotations), ""]
+    for i, ann in enumerate(annotations, 1):
+        path = ann.get("path", "unknown")
+        line = ann.get("start_line", "?")
+        title = ann.get("title", "").strip()
+        message = ann.get("message", "").strip()
+
+        parts.append("**Failure %d** \u2014 `%s` (line %s):" % (i, path, line))
+        if title:
+            parts.append("  %s" % title)
+        if message:
+            # Limit message length to avoid prompt bloat
+            if len(message) > 1000:
+                message = message[:1000] + "\n  ... (truncated)"
+            parts.append(message)
+        parts.append("")
 
     return "\n".join(parts)

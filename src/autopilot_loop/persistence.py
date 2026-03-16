@@ -28,7 +28,7 @@ DB_PATH = os.path.join(DB_DIR, "state.db")
 
 # Bump this when the schema changes. Additive changes (new nullable columns)
 # are handled by _migrate(). Breaking changes trigger a DB recreate.
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS schema_meta (
@@ -48,6 +48,8 @@ CREATE TABLE IF NOT EXISTS tasks (
     dry_run INTEGER NOT NULL DEFAULT 0,
     model TEXT,
     last_review_id INTEGER,
+    task_mode TEXT NOT NULL DEFAULT 'review',
+    ci_check_names TEXT,
     created_at REAL NOT NULL,
     updated_at REAL NOT NULL
 );
@@ -77,6 +79,8 @@ CREATE TABLE IF NOT EXISTS agent_runs (
 # Applied in order. Only runs migrations newer than the current DB version.
 _MIGRATIONS = [
     (2, "tasks", "last_review_id", "INTEGER"),
+    (3, "tasks", "task_mode", "TEXT NOT NULL DEFAULT 'review'"),
+    (3, "tasks", "ci_check_names", "TEXT"),
 ]
 
 
@@ -178,7 +182,8 @@ def get_task(task_id):
 
 _TASK_COLUMNS = frozenset({
     "prompt", "state", "pr_number", "branch", "iteration",
-    "max_iterations", "plan_mode", "dry_run", "model", "last_review_id", "updated_at",
+    "max_iterations", "plan_mode", "dry_run", "model", "last_review_id",
+    "task_mode", "ci_check_names", "updated_at",
 })
 
 
