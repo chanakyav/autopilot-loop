@@ -14,6 +14,8 @@ which copilot
 
 If missing, check with your org admin that Copilot is enabled for your repository.
 
+**Locally:** Install the [GitHub Copilot CLI](https://docs.github.com/en/copilot/github-copilot-in-the-cli). Run `autopilot doctor` to verify.
+
 ### `gh: command not found`
 
 The `gh` CLI is not installed. In most Codespaces it's pre-installed. Otherwise:
@@ -27,6 +29,16 @@ brew install gh
 ```
 
 Then authenticate: `gh auth login`
+
+### Diagnose with `autopilot doctor`
+
+Run `autopilot doctor` to check all prerequisites at once:
+
+```bash
+autopilot doctor
+```
+
+This checks for `copilot`, `gh`, `git`, `tmux`, authentication, and whether you're inside a git repository.
 
 ### `tmux not found`
 

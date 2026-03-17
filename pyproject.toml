@@ -15,7 +15,7 @@ dependencies = [
 authors = [
     { name = "Chanakya Valluri" },
 ]
-keywords = ["copilot", "automation", "code-review", "github", "codespaces"]
+keywords = ["copilot", "automation", "code-review", "github", "codespaces", "cli", "local"]
 classifiers = [
     "Development Status :: 3 - Alpha",
     "Intended Audience :: Developers",

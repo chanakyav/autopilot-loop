@@ -4,11 +4,12 @@
 
 | Requirement | Notes |
 |---|---|
-| **GitHub Codespace** | autopilot-loop is designed to run inside Codespaces |
-| **`copilot` CLI** | Pre-installed in Codespaces with Copilot enabled |
-| **`gh` CLI** | Pre-installed in most Codespaces; used for GitHub API calls |
-| **tmux** | Pre-installed in most Codespaces; `apt install tmux` otherwise |
-| **Python 3.8+** | Pre-installed in Codespaces; `rich` is installed automatically |
+| **`copilot` CLI** | Pre-installed in Codespaces; [install locally](local-setup.md) otherwise |
+| **`gh` CLI** | Pre-installed in Codespaces; [install locally](https://cli.github.com) otherwise |
+| **tmux** | Recommended; `brew install tmux` (macOS) or `apt install tmux` (Linux) |
+| **Python 3.8+** | Pre-installed in most environments |
+
+Run `autopilot doctor` to verify all prerequisites.
 
 ## Install
 
@@ -24,9 +25,15 @@ autopilot --help
 
 ## Run Your First Task
 
-1. **Open a Codespace** on the repo you want to work in.
+1. **Open a terminal** in your Codespace or local workspace.
 
-2. **Start a task** with a prompt describing what you want done:
+2. **Verify your setup** (first time only):
+
+   ```bash
+   autopilot doctor
+   ```
+
+3. **Start a task** with a prompt describing what you want done:
 
    ```bash
    autopilot start --prompt "Refactor UserService: extract billing logic into a concern"
@@ -72,6 +79,8 @@ autopilot --help
    - Loop until the review is clean (or max iterations reached)
 
    Close your laptop — it keeps going in tmux.
+
+> **Running locally?** See [Running Locally](local-setup.md) for setup instructions.
 
 ## Start from a GitHub Issue
 

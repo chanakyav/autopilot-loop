@@ -68,6 +68,8 @@ Search order (first found wins):
 
 ### Codespace
 
+These settings only apply when running inside a GitHub Codespace. They are automatically skipped on local workspaces.
+
 | Field | Type | Default | Description |
 |---|---|---|---|
 | `idle_timeout_minutes` | int | `120` | Codespace idle timeout to set when a task starts. Only applied if the current timeout is lower. Capped by org policy. |

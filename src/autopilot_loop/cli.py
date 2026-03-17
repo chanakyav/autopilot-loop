@@ -1,6 +1,6 @@
 """CLI entry point for autopilot-loop.
 
-Subcommands: start, resume, status, logs, stop, restart, fix-ci, attach, next.
+Subcommands: start, resume, status, logs, stop, restart, fix-ci, attach, next, doctor.
 """
 
 import argparse
@@ -8,6 +8,7 @@ import json
 import logging
 import os
 import re
+import shutil
 import subprocess
 import sys
 import uuid
@@ -557,6 +558,87 @@ def cmd_restart(args):
                     pr_number=task.get("pr_number"))
 
 
+def cmd_doctor(args):
+    """Check prerequisites for running autopilot-loop."""
+    checks = []
+    all_ok = True
+
+    # copilot CLI
+    if shutil.which("copilot"):
+        checks.append((True, "copilot CLI", "found"))
+    else:
+        checks.append((False, "copilot CLI", "not found — install GitHub Copilot CLI"))
+        all_ok = False
+
+    # gh CLI
+    if shutil.which("gh"):
+        checks.append((True, "gh CLI", "found"))
+        # Check auth
+        try:
+            subprocess.run(
+                ["gh", "auth", "status"],
+                capture_output=True, check=True,
+            )
+            checks.append((True, "gh auth", "authenticated"))
+        except (subprocess.CalledProcessError, FileNotFoundError):
+            checks.append((False, "gh auth", "not authenticated — run: gh auth login"))
+            all_ok = False
+    else:
+        checks.append((False, "gh CLI", "not found — install: https://cli.github.com"))
+        checks.append((False, "gh auth", "skipped (gh not found)"))
+        all_ok = False
+
+    # git
+    if shutil.which("git"):
+        checks.append((True, "git", "found"))
+        # Check if inside a git repo
+        try:
+            subprocess.run(
+                ["git", "rev-parse", "--is-inside-work-tree"],
+                capture_output=True, check=True,
+            )
+            checks.append((True, "git repo", "inside a git repository"))
+        except (subprocess.CalledProcessError, FileNotFoundError):
+            checks.append((False, "git repo", "not inside a git repository"))
+            all_ok = False
+    else:
+        checks.append((False, "git", "not found — install git"))
+        checks.append((False, "git repo", "skipped (git not found)"))
+        all_ok = False
+
+    # tmux (optional)
+    if shutil.which("tmux"):
+        checks.append((True, "tmux", "found"))
+    else:
+        checks.append((None, "tmux", "not found (optional — tasks will run in foreground)"))
+
+    # Environment detection
+    in_codespace = os.environ.get("CODESPACE_NAME")
+    if in_codespace:
+        checks.append((True, "environment", "GitHub Codespace (%s)" % in_codespace))
+    else:
+        checks.append((True, "environment", "local workspace"))
+
+    # Print results
+    print("autopilot doctor")
+    print()
+    for ok, name, detail in checks:
+        if ok is True:
+            symbol = "\u2713"
+        elif ok is False:
+            symbol = "\u2717"
+        else:
+            symbol = "~"
+        print("  %s  %-12s %s" % (symbol, name, detail))
+    print()
+
+    if all_ok:
+        print("All checks passed. Ready to use autopilot-loop.")
+    else:
+        print("Some checks failed. Install missing tools and try again.")
+        sys.exit(1)
+
+
 _BANNER = r"""
    ___       __              _ __   __     __
   / _ |__ __/ /____  ___  (_) /__  / /_   / /  ___  ___  ___
@@ -627,6 +709,9 @@ def main():
     # next
     subparsers.add_parser("next", help="Jump to next session needing attention")
 
+    # doctor
+    subparsers.add_parser("doctor", help="Check prerequisites for running autopilot-loop")
+
     # _run (internal, called from tmux)
     p_run = subparsers.add_parser("_run", help=argparse.SUPPRESS)
     p_run.add_argument("--task-id", required=True, help=argparse.SUPPRESS)
@@ -652,6 +737,8 @@ def main():
         cmd_attach(args)
     elif args.command == "next":
         cmd_next(args)
+    elif args.command == "doctor":
+        cmd_doctor(args)
     elif args.command == "_run":
         cmd_run(args)
     else:

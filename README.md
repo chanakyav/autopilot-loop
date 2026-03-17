@@ -12,11 +12,11 @@
 [![Python 3.8+](https://img.shields.io/badge/python-3.8%2B-blue.svg)](https://www.python.org/downloads/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
-Headless orchestrator that automates the Copilot **implement → review → fix** cycle, running in tmux inside GitHub Codespaces. Survives disconnects.
+Headless orchestrator that automates the Copilot **implement → review → fix** cycle, running in tmux. Works in GitHub Codespaces and local workspaces. Survives disconnects.
 
 ---
 
-**[Getting Started](docs/getting-started.md)** · **[Configuration](docs/configuration.md)** · **[Fix CI](docs/fix-ci-workflow.md)** · **[Dotfiles Setup](docs/dotfiles-setup.md)** · **[Troubleshooting](docs/troubleshooting.md)**
+**[Getting Started](docs/getting-started.md)** · **[Running Locally](docs/local-setup.md)** · **[Configuration](docs/configuration.md)** · **[Fix CI](docs/fix-ci-workflow.md)** · **[Dotfiles Setup](docs/dotfiles-setup.md)** · **[Troubleshooting](docs/troubleshooting.md)**
 
 ---
 
@@ -60,6 +60,7 @@ All runs in tmux. Close your laptop — it keeps going.
 | `autopilot logs` | Show latest task log |
 | `autopilot attach <id>` | Attach to a task's tmux session |
 | `autopilot next` | Jump to next session needing attention |
+| `autopilot doctor` | Check prerequisites (tools, auth, environment) |
 
 ## Interactive Dashboard
 
@@ -91,9 +92,11 @@ See [Configuration Reference](docs/configuration.md) for all options.
 
 ## Prerequisites
 
-- **GitHub Codespace** with `copilot` CLI and `gh` CLI
-- **tmux** (pre-installed in most Codespaces)
+- **`copilot` CLI** and **`gh` CLI** (pre-installed in Codespaces, or [install locally](docs/local-setup.md))
+- **tmux** (recommended; tasks fall back to foreground without it)
 - **Python 3.8+**
+
+Run `autopilot doctor` to verify your setup.
 
 ## Local Development
 

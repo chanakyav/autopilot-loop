@@ -116,16 +116,18 @@ class BaseOrchestrator:
         """Validate config, create session dir, set codespace idle timeout."""
         logger.info("[%s] INIT \u2192 Validated config, created session dir", self.task_id)
 
-        # Set codespace idle timeout (non-fatal, can be disabled via config)
-        if self.config.get("idle_timeout_enabled", True):
+        # Set codespace idle timeout (non-fatal, only in Codespaces)
+        if not os.environ.get("CODESPACE_NAME"):
+            logger.debug("[%s] Not in a Codespace, skipping idle timeout", self.task_id)
+        elif not self.config.get("idle_timeout_enabled", True):
+            logger.info("[%s] Idle timeout extension disabled by config", self.task_id)
+        else:
             try:
                 set_idle_timeout(self.config.get("idle_timeout_minutes", 120))
                 logger.info("[%s] \u2713 Codespace idle timeout set to %d minutes",
                             self.task_id, self.config.get("idle_timeout_minutes", 120))
             except Exception as e:
                 logger.warning("[%s] Could not set codespace idle timeout: %s", self.task_id, e)
-        else:
-            logger.info("[%s] Idle timeout extension disabled by config", self.task_id)
 
         return self._init_next_state()
 
@@ -162,6 +164,9 @@ class BaseOrchestrator:
                     dirs.append(candidate)
         except OSError:
             pass
+        if dirs:
+            logger.debug("Auto-discovered %d sibling repo(s): %s", len(dirs),
+                         ", ".join(os.path.basename(d) for d in dirs))
         return dirs
 
     def _run_agent_with_retry(self, phase, prompt, session_name):
