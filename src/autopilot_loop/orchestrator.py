@@ -668,6 +668,9 @@ class CIOrchestrator(BaseOrchestrator):
 
         # Get current failed checks to find job IDs
         all_failed = get_failed_checks(pr_number)
+        if all_failed is None:
+            logger.error("[%s] Could not fetch CI checks (API error)", self.task_id)
+            return "FAILED"
         selected = [c for c in all_failed if c["name"] in ci_check_names]
 
         # Collect job IDs for annotation fetching
@@ -676,6 +679,9 @@ class CIOrchestrator(BaseOrchestrator):
         if not job_ids:
             # Check if the selected checks are now passing
             states = get_check_states(pr_number, ci_check_names)
+            if states is None:
+                logger.error("[%s] Could not fetch check states (API error)", self.task_id)
+                return "FAILED"
             all_passing = all(s == "SUCCESS" for s in states.values())
             if all_passing:
                 logger.info("[%s] \u2713 All selected checks are passing!", self.task_id)
@@ -724,6 +730,8 @@ class CIOrchestrator(BaseOrchestrator):
             # Re-fetch if not cached (e.g., after restart)
             ci_check_names = json.loads(self.task.get("ci_check_names") or "[]")
             all_failed = get_failed_checks(self.task["pr_number"])
+            if all_failed is None:
+                all_failed = []
             selected = [c for c in all_failed if c["name"] in ci_check_names]
             job_ids = [c["job_id"] for c in selected if c.get("job_id")]
             annotations = get_check_annotations(job_ids)
@@ -765,6 +773,10 @@ class CIOrchestrator(BaseOrchestrator):
                 return "COMPLETE"
 
             states = get_check_states(pr_number, ci_check_names)
+            if states is None:
+                logger.warning("[%s] Could not fetch check states, will retry", self.task_id)
+                time.sleep(poll_interval)
+                continue
 
             # Check if all selected checks have completed
             pending = [n for n, s in states.items() if s not in ("SUCCESS", "FAILURE", "ERROR")]

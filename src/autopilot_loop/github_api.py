@@ -252,7 +252,11 @@ def get_unresolved_review_comments(pr_number):
     if not output:
         return []
 
-    data = json.loads(output)
+    try:
+        data = json.loads(output)
+    except ValueError:
+        logger.warning("Failed to parse GraphQL response in get_unresolved_review_comments")
+        return []
 
     # Check for GraphQL errors
     if "errors" in data:
@@ -305,8 +309,16 @@ def _strip_ansi(text):
     return _ANSI_RE.sub("", text)
 
 
-def get_failed_checks(pr_number):
-    """Get failed CI checks for a PR.
+_NON_FAILING_STATES = frozenset({"SUCCESS", "PENDING", "SKIPPED", "EXPECTED"})
+
+# Conclusions from the REST check-runs API that indicate failure.
+_FAILING_CONCLUSIONS = frozenset({
+    "failure", "timed_out", "cancelled", "action_required", "startup_failure",
+})
+
+
+def _parse_checks(raw_checks):
+    """Parse raw check dicts into the standardised format.
 
     Excludes aggregation gate checks (names ending in '-results').
     Parses run_id and job_id from the check link URL.
@@ -314,27 +326,15 @@ def get_failed_checks(pr_number):
     Returns:
         List of dicts with {name, link, run_id, job_id}.
     """
-    output = _run_gh([
-        "pr", "checks", str(pr_number),
-        "--json", "name,state,link",
-        "--jq", '[.[] | select(.state == "FAILURE")]',
-    ], check=False)
-
-    if not output:
-        return []
-
-    raw_checks = json.loads(output)
     checks = []
     for c in raw_checks:
         name = c.get("name", "")
-        # Skip aggregation gates (e.g., "build-results", "test-results")
         if name.endswith("-results"):
             continue
 
-        link = c.get("link", "")
+        link = c.get("link", "") or c.get("html_url", "")
         run_id = None
         job_id = None
-        # Parse from URL: /actions/runs/{run_id}/job/{job_id}
         m = re.search(r"/actions/runs/(\d+)/job/(\d+)", link)
         if m:
             run_id = int(m.group(1))
@@ -346,8 +346,72 @@ def get_failed_checks(pr_number):
             "run_id": run_id,
             "job_id": job_id,
         })
-
     return checks
+
+
+def _get_failed_checks_rest(pr_number):
+    """Fallback: fetch failed checks via REST API.
+
+    Uses ``gh pr view`` to obtain the HEAD SHA, then queries the
+    check-runs endpoint.  Returns None on any error.
+    """
+    try:
+        sha = _run_gh([
+            "pr", "view", str(pr_number),
+            "--json", "headRefOid", "--jq", ".headRefOid",
+        ])
+        if not sha:
+            return None
+        nwo = get_repo_nwo()
+        output = _run_gh([
+            "api", "repos/%s/commits/%s/check-runs" % (nwo, sha),
+            "--jq", ".check_runs",
+        ])
+        if not output:
+            return None
+        raw = json.loads(output)
+        failed = [
+            c for c in raw
+            if c.get("conclusion") in _FAILING_CONCLUSIONS
+        ]
+        return _parse_checks(failed)
+    except (GitHubAPIError, ValueError):
+        logger.debug("REST fallback for get_failed_checks also failed")
+        return None
+
+
+def get_failed_checks(pr_number):
+    """Get failed CI checks for a PR.
+
+    Tries ``gh pr checks`` first.  If that fails (e.g. due to
+    permission errors), falls back to the REST check-runs API.
+
+    Returns:
+        List of dicts with {name, link, run_id, job_id}, or
+        None if the CI check status could not be fetched.
+    """
+    try:
+        output = _run_gh([
+            "pr", "checks", str(pr_number),
+            "--json", "name,state,link",
+            "--jq",
+            '[.[] | select(.state != "SUCCESS" and .state != "PENDING"'
+            ' and .state != "SKIPPED" and .state != "EXPECTED")]',
+        ])
+    except GitHubAPIError as exc:
+        logger.warning("gh pr checks failed, trying REST fallback: %s", exc)
+        return _get_failed_checks_rest(pr_number)
+
+    if not output:
+        return []
+
+    try:
+        raw_checks = json.loads(output)
+    except ValueError:
+        logger.warning("Failed to parse gh pr checks output")
+        return _get_failed_checks_rest(pr_number)
+
+    return _parse_checks(raw_checks)
 
 
 def get_check_annotations(job_ids):
@@ -375,7 +439,11 @@ def get_check_annotations(job_ids):
         if not output:
             continue
 
-        raw = json.loads(output)
+        try:
+            raw = json.loads(output)
+        except ValueError:
+            logger.warning("Failed to parse annotations for job %d", job_id)
+            continue
         for ann in raw:
             if ann.get("annotation_level") != "failure":
                 continue
@@ -413,16 +481,27 @@ def get_check_states(pr_number, check_names):
         check_names: List of check names to query.
 
     Returns:
-        Dict mapping check name to state string (e.g., 'SUCCESS', 'FAILURE', 'PENDING').
+        Dict mapping check name to state string
+        (e.g., 'SUCCESS', 'FAILURE', 'PENDING'),
+        or None if the API call failed.
     """
-    output = _run_gh([
-        "pr", "checks", str(pr_number),
-        "--json", "name,state",
-    ], check=False)
+    try:
+        output = _run_gh([
+            "pr", "checks", str(pr_number),
+            "--json", "name,state",
+        ])
+    except GitHubAPIError as exc:
+        logger.warning("gh pr checks failed in get_check_states: %s", exc)
+        return None
 
     if not output:
         return {name: "UNKNOWN" for name in check_names}
 
-    raw = json.loads(output)
+    try:
+        raw = json.loads(output)
+    except ValueError:
+        logger.warning("Failed to parse gh pr checks output in get_check_states")
+        return None
+
     state_map = {c["name"]: c["state"] for c in raw}
     return {name: state_map.get(name, "UNKNOWN") for name in check_names}
