@@ -22,6 +22,7 @@ from autopilot_loop.dashboard import (
     _get_indicator,
     _read_key,
     _read_log_tail,
+    logs_tui,
 )
 
 
@@ -187,13 +188,19 @@ class TestFooters:
     def test_main_footer_has_all_keys(self):
         footer = _build_footer_main()
         text = str(footer)
-        for key in ["j/k", "Enter", "x", "l", "d", "r", "q"]:
+        for key in ["j/k", "Enter", "x", "a", "d", "r", "q"]:
             assert key in text
+        assert "logs" in text
+        assert "tmux" in text
+        # "attach" should no longer appear in footer
+        assert "attach" not in text
 
     def test_detail_footer_has_close(self):
         footer = _build_footer_detail()
         text = str(footer)
         assert "close" in text
+        assert "Enter" in text
+        assert "full logs" in text
 
     def test_logs_footer_has_scroll(self):
         footer = _build_footer_logs()
@@ -395,3 +402,47 @@ class TestMakeConsole:
         from autopilot_loop.dashboard import _make_console
         console = _make_console()
         assert console.no_color is True
+
+
+class TestReadKeyAttach:
+    def test_a_returns_attach(self):
+        r, w = os.pipe()
+        try:
+            os.write(w, b"a")
+            result = _read_key(r, timeout=0.1)
+            assert result == "attach"
+        finally:
+            os.close(r)
+            os.close(w)
+
+
+class TestLogsTui:
+    def test_non_tty_returns_immediately(self, monkeypatch):
+        """logs_tui should return without error when stdin is not a TTY."""
+        monkeypatch.setattr("sys.stdin", open(os.devnull))
+        # Should not raise
+        logs_tui("fake-id")
+
+    def test_calls_logs_view(self, monkeypatch):
+        """logs_tui should call _logs_view with correct args."""
+        calls = []
+
+        monkeypatch.setattr("sys.stdin.isatty", lambda: True)
+        monkeypatch.setattr("sys.stdin.fileno", lambda: 0)
+
+        # Stub termios/tty operations and TUI enter/exit
+        import autopilot_loop.dashboard as dash
+        monkeypatch.setattr(dash, "_enter_tui", lambda: None)
+        monkeypatch.setattr(dash, "_exit_tui", lambda: None)
+
+        import termios
+        monkeypatch.setattr(termios, "tcgetattr", lambda fd: [])
+        monkeypatch.setattr(termios, "tcsetattr", lambda fd, w, s: None)
+
+        def fake_logs_view(fd, old_settings, task_id, interval):
+            calls.append((task_id, interval))
+            return None
+
+        monkeypatch.setattr(dash, "_logs_view", fake_logs_view)
+        logs_tui("abc12345", interval=3)
+        assert calls == [("abc12345", 3)]

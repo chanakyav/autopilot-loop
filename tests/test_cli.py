@@ -217,3 +217,94 @@ class TestCmdFixCiErrorHandling:
         captured = capsys.readouterr()
         assert "could not fetch CI checks" in captured.err
         assert "gh auth status" in captured.err
+
+
+class TestCmdStartFollow:
+    """Test auto-follow behavior after autopilot start."""
+
+    def _make_args(self, **overrides):
+        defaults = {
+            "prompt": "test prompt",
+            "issue": None,
+            "plan": False,
+            "model": None,
+            "max_iters": None,
+            "dry_run": False,
+            "no_follow": False,
+        }
+        defaults.update(overrides)
+        return SimpleNamespace(**defaults)
+
+    def _stub_start_deps(self, monkeypatch):
+        """Stub all cmd_start dependencies so it doesn't hit real systems."""
+        monkeypatch.setattr(
+            "autopilot_loop.cli.load_config",
+            lambda overrides: {
+                "model": "test-model",
+                "max_iterations": 3,
+                "branch_pattern": "autopilot/{task_id}",
+            },
+        )
+        monkeypatch.setattr("autopilot_loop.cli._detect_autopilot_branch", lambda: None)
+        monkeypatch.setattr("autopilot_loop.cli._check_branch_lock", lambda b: None)
+        monkeypatch.setattr("autopilot_loop.cli._launch_in_tmux", lambda *a, **kw: None)
+
+    def test_follow_calls_logs_tui(self, monkeypatch):
+        """When --no-follow is absent and stdout is a TTY, logs_tui is called."""
+        self._stub_start_deps(monkeypatch)
+        monkeypatch.setattr("sys.stdout.isatty", lambda: True)
+
+        calls = []
+        monkeypatch.setattr(
+            "autopilot_loop.dashboard.logs_tui",
+            lambda task_id: calls.append(task_id),
+        )
+
+        from autopilot_loop.cli import cmd_start
+        cmd_start(self._make_args())
+        assert len(calls) == 1
+
+    def test_no_follow_skips_logs_tui(self, monkeypatch):
+        """When --no-follow is set, logs_tui is NOT called."""
+        self._stub_start_deps(monkeypatch)
+        monkeypatch.setattr("sys.stdout.isatty", lambda: True)
+
+        calls = []
+        monkeypatch.setattr(
+            "autopilot_loop.dashboard.logs_tui",
+            lambda task_id: calls.append(task_id),
+        )
+
+        from autopilot_loop.cli import cmd_start
+        cmd_start(self._make_args(no_follow=True))
+        assert len(calls) == 0
+
+    def test_non_tty_skips_logs_tui(self, monkeypatch):
+        """When stdout is not a TTY, logs_tui is NOT called."""
+        self._stub_start_deps(monkeypatch)
+        monkeypatch.setattr("sys.stdout.isatty", lambda: False)
+
+        calls = []
+        monkeypatch.setattr(
+            "autopilot_loop.dashboard.logs_tui",
+            lambda task_id: calls.append(task_id),
+        )
+
+        from autopilot_loop.cli import cmd_start
+        cmd_start(self._make_args())
+        assert len(calls) == 0
+
+    def test_dry_run_skips_logs_tui(self, monkeypatch, capsys):
+        """When --dry-run is set, logs_tui is NOT called."""
+        self._stub_start_deps(monkeypatch)
+        monkeypatch.setattr("sys.stdout.isatty", lambda: True)
+
+        calls = []
+        monkeypatch.setattr(
+            "autopilot_loop.dashboard.logs_tui",
+            lambda task_id: calls.append(task_id),
+        )
+
+        from autopilot_loop.cli import cmd_start
+        cmd_start(self._make_args(dry_run=True))
+        assert len(calls) == 0
