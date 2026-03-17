@@ -229,6 +229,14 @@ class TestGetUnresolvedReviewComments:
             ]
             assert get_unresolved_review_comments(42) == []
 
+    def test_malformed_json_returns_empty(self):
+        with patch("autopilot_loop.github_api._run_gh") as mock_gh:
+            mock_gh.side_effect = [
+                "octocat/hello-world",
+                "not valid json",
+            ]
+            assert get_unresolved_review_comments(42) == []
+
 
 class TestGetIssue:
     def test_returns_issue(self):
@@ -288,6 +296,54 @@ class TestGetFailedChecks:
         assert result[0]["run_id"] is None
         assert result[0]["job_id"] is None
 
+    def test_api_error_tries_rest_fallback(self):
+        with patch("autopilot_loop.github_api._run_gh") as mock_gh:
+            mock_gh.side_effect = [
+                github_api_module.GitHubAPIError("permission error"),  # gh pr checks
+                "abc123",  # pr view for SHA
+                "octocat/hello-world",  # get_repo_nwo
+                json.dumps([{"name": "build", "conclusion": "failure",
+                             "html_url": "https://github.com/o/r/actions/runs/1/job/2"}]),
+            ]
+            result = get_failed_checks(42)
+        assert result is not None
+        assert len(result) == 1
+        assert result[0]["name"] == "build"
+
+    def test_api_error_and_rest_fallback_fails_returns_none(self):
+        with patch("autopilot_loop.github_api._run_gh") as mock_gh:
+            mock_gh.side_effect = [
+                github_api_module.GitHubAPIError("permission error"),  # gh pr checks
+                github_api_module.GitHubAPIError("also fails"),  # pr view for SHA
+            ]
+            result = get_failed_checks(42)
+        assert result is None
+
+    def test_malformed_json_tries_rest_fallback(self):
+        with patch("autopilot_loop.github_api._run_gh") as mock_gh:
+            mock_gh.side_effect = [
+                "not valid json",  # gh pr checks returns garbage
+                github_api_module.GitHubAPIError("also fails"),  # rest fallback fails
+            ]
+            result = get_failed_checks(42)
+        assert result is None
+
+    def test_widened_filter_catches_error_state(self):
+        # The jq filter is applied by gh CLI, so in tests we just pass
+        # through whatever the jq filter returns. This test verifies that
+        # non-FAILURE states like ERROR are accepted by _parse_checks.
+        checks_json = json.dumps([
+            {"name": "check-error", "state": "ERROR",
+             "link": "https://github.com/o/r/actions/runs/1/job/2"},
+            {"name": "check-startup", "state": "STARTUP_FAILURE",
+             "link": "https://github.com/o/r/actions/runs/1/job/3"},
+        ])
+        with patch("autopilot_loop.github_api.subprocess.run", return_value=_mock_run(checks_json)):
+            result = get_failed_checks(42)
+        assert len(result) == 2
+        assert result[0]["name"] == "check-error"
+        assert result[1]["name"] == "check-startup"
+
 
 class TestGetCheckAnnotations:
     def test_returns_failure_annotations_deduped(self):
@@ -335,6 +391,21 @@ class TestGetCheckAnnotations:
             mock_gh.side_effect = ["octocat/hello-world", ""]
             assert get_check_annotations([100]) == []
 
+    def test_malformed_json_skips_job(self):
+        good_ann = json.dumps([
+            {"annotation_level": "failure", "path": "test/a.rb", "start_line": 1,
+             "end_line": 1, "title": "Fail", "message": "msg"},
+        ])
+        with patch("autopilot_loop.github_api._run_gh") as mock_gh:
+            mock_gh.side_effect = [
+                "octocat/hello-world",
+                "not valid json",  # job 100 returns garbage
+                good_ann,  # job 200 succeeds
+            ]
+            result = get_check_annotations([100, 200])
+        assert len(result) == 1
+        assert result[0]["path"] == "test/a.rb"
+
 
 class TestGetCheckStates:
     def test_returns_states_for_selected(self):
@@ -348,3 +419,16 @@ class TestGetCheckStates:
         assert result["check-a"] == "SUCCESS"
         assert result["check-b"] == "FAILURE"
         assert result["check-d"] == "UNKNOWN"
+
+    def test_api_error_returns_none(self):
+        with patch("autopilot_loop.github_api.subprocess.run",
+                   return_value=_mock_run("", returncode=1,
+                                          stderr="GraphQL: Resource not accessible")):
+            result = get_check_states(42, ["check-a"])
+        assert result is None
+
+    def test_malformed_json_returns_none(self):
+        with patch("autopilot_loop.github_api.subprocess.run",
+                   return_value=_mock_run("not json")):
+            result = get_check_states(42, ["check-a"])
+        assert result is None

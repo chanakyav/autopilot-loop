@@ -420,6 +420,17 @@ def cmd_fix_ci(args):
 
     # Get failed checks
     failed_checks = get_failed_checks(args.pr)
+    if failed_checks is None:
+        print(
+            "Error: could not fetch CI checks for PR #%d." % args.pr,
+            file=sys.stderr,
+        )
+        print(
+            "This may be a permissions issue. "
+            "Run `gh auth status` to verify token scopes.",
+            file=sys.stderr,
+        )
+        sys.exit(1)
     if not failed_checks:
         print("No failed CI checks found on PR #%d" % args.pr)
         return

@@ -1,11 +1,13 @@
 """Tests for CLI helpers."""
 
 import subprocess
+from types import SimpleNamespace
+from unittest.mock import patch
 
 import pytest
 
 from autopilot_loop import persistence
-from autopilot_loop.cli import _check_branch_lock, _validate_task_id, cmd_doctor
+from autopilot_loop.cli import _check_branch_lock, _validate_task_id, cmd_doctor, cmd_fix_ci
 
 
 @pytest.fixture(autouse=True)
@@ -182,3 +184,36 @@ class TestCmdDoctor:
             cmd_doctor(None)
         out = capsys.readouterr().out
         assert "not inside a git repository" in out
+
+
+class TestCmdFixCiErrorHandling:
+    def test_none_checks_prints_error_and_exits(self, capsys, monkeypatch):
+        """When get_failed_checks returns None, cmd_fix_ci should exit 1 with an error."""
+        args = SimpleNamespace(pr=99, model=None, max_iters=None, checks=None)
+
+        # Stub load_config
+        monkeypatch.setattr(
+            "autopilot_loop.cli.load_config",
+            lambda overrides: {"model": "gpt-4", "max_iterations": 5},
+        )
+
+        # Stub PR branch lookup
+        monkeypatch.setattr(
+            subprocess, "run",
+            lambda cmd, **kw: subprocess.CompletedProcess(
+                args=cmd, returncode=0, stdout="some-branch\n", stderr="",
+            ),
+        )
+
+        # Stub _check_branch_lock to be a no-op
+        monkeypatch.setattr("autopilot_loop.cli._check_branch_lock", lambda b: None)
+
+        # get_failed_checks returns None (API error)
+        with patch("autopilot_loop.github_api.get_failed_checks", return_value=None):
+            with pytest.raises(SystemExit) as exc_info:
+                cmd_fix_ci(args)
+
+        assert exc_info.value.code == 1
+        captured = capsys.readouterr()
+        assert "could not fetch CI checks" in captured.err
+        assert "gh auth status" in captured.err
