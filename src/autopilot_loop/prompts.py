@@ -129,7 +129,7 @@ def plan_and_implement_prompt(task_description, branch_name, custom_instructions
     return "\n".join(parts)
 
 
-def fix_prompt(review_comments_text, custom_instructions=""):
+def fix_prompt(review_comments_text, custom_instructions="", previous_context=""):
     """Prompt for the FIX phase.
 
     Agent addresses PR review comments, commits, pushes, self-reviews,
@@ -139,6 +139,12 @@ def fix_prompt(review_comments_text, custom_instructions=""):
 
     if custom_instructions:
         parts.append(custom_instructions.strip())
+        parts.append("")
+
+    if previous_context:
+        parts.append("## Previous Iteration Context")
+        parts.append("")
+        parts.append(previous_context.strip())
         parts.append("")
 
     parts.append("## Copilot Review Feedback to Address")

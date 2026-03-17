@@ -462,6 +462,53 @@ class Orchestrator(BaseOrchestrator):
 
         return "FIX"
 
+    def _load_previous_fix_summary(self, current_iteration):
+        """Load the previous iteration's fix summary for context carry-forward.
+
+        Returns a formatted string describing what the previous agent decided,
+        or empty string if no previous summary exists.
+        """
+        prev_iteration = current_iteration - 1
+        if prev_iteration < 1:
+            return ""
+
+        summary_path = os.path.join(self.sessions_dir, "fix-summary-%d.json" % prev_iteration)
+        if not os.path.isfile(summary_path):
+            return ""
+
+        try:
+            with open(summary_path, "r") as f:
+                entries = json.load(f)
+        except (json.JSONDecodeError, OSError):
+            return ""
+
+        if not entries:
+            return ""
+
+        lines = [
+            "In iteration %d, the agent made these decisions:" % prev_iteration,
+            "",
+        ]
+        for entry in entries:
+            cid = entry.get("comment_id", "?")
+            status = entry.get("status", "unknown")
+            message = entry.get("message", "")
+            if status == "fixed":
+                lines.append("- Comment %s: FIXED — %s" % (cid, message or "no details"))
+            elif status == "skipped":
+                lines.append("- Comment %s: SKIPPED — %s" % (cid, message or "no reason given"))
+            else:
+                lines.append("- Comment %s: %s — %s" % (cid, status.upper(), message))
+
+        lines.append("")
+        lines.append(
+            "The comments below are STILL unresolved after re-review. "
+            "The previous fix may not have fully addressed the concern, "
+            "or Copilot found new issues. Adjust your approach accordingly."
+        )
+
+        return "\n".join(lines)
+
     def _do_fix(self):
         """Run copilot agent to address review comments."""
         pr_number = self.task["pr_number"]
@@ -476,11 +523,15 @@ class Orchestrator(BaseOrchestrator):
         review = get_copilot_review(pr_number)
         review_body = review.get("body", "") if review else ""
 
+        # Load previous iteration's fix summary for context carry-forward
+        previous_context = self._load_previous_fix_summary(iteration)
+
         # Format for prompt
         review_text = format_review_for_prompt(review_body, unresolved)
         prompt = fix_prompt(
             review_comments_text=review_text,
             custom_instructions=self.config.get("custom_instructions", ""),
+            previous_context=previous_context,
         )
 
         # Record head SHA before fix
@@ -509,6 +560,12 @@ class Orchestrator(BaseOrchestrator):
                     if cid is not None:
                         summaries[int(cid)] = entry
                 logger.info("[%s] Loaded fix summary: %d entries", self.task_id, len(summaries))
+
+                # Persist to sessions dir for context carry-forward to next iteration
+                import shutil
+                iteration = self.task["iteration"]
+                saved = os.path.join(self.sessions_dir, "fix-summary-%d.json" % iteration)
+                shutil.copy2(summary_file, saved)
             except (json.JSONDecodeError, KeyError) as e:
                 logger.warning("[%s] Could not parse fix summary: %s", self.task_id, e)
 
