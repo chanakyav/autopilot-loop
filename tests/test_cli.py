@@ -7,7 +7,13 @@ from unittest.mock import patch
 import pytest
 
 from autopilot_loop import persistence
-from autopilot_loop.cli import _check_branch_lock, _validate_task_id, cmd_doctor, cmd_fix_ci
+from autopilot_loop.cli import (
+    _check_branch_lock,
+    _validate_task_id,
+    cmd_doctor,
+    cmd_fix_ci,
+    cmd_resume,
+)
 
 
 @pytest.fixture(autouse=True)
@@ -308,3 +314,108 @@ class TestCmdStartFollow:
         from autopilot_loop.cli import cmd_start
         cmd_start(self._make_args(dry_run=True))
         assert len(calls) == 0
+
+
+class TestCmdResumeRepoValidation:
+    """Test that cmd_resume rejects PRs from a different repo."""
+
+    def _gh_pr_view_output(self, branch, state, nwo):
+        """Build the tsv output that gh pr view would return."""
+        return "%s\t%s\t%s\n" % (branch, state, nwo)
+
+    def test_wrong_repo_exits(self, monkeypatch, capsys):
+        """cmd_resume should exit 1 when the PR belongs to a different repo."""
+        monkeypatch.setattr(
+            "autopilot_loop.cli.load_config",
+            lambda **kw: {"model": "m", "max_iterations": 3},
+        )
+        monkeypatch.setattr(
+            "autopilot_loop.github_api.get_repo_nwo",
+            lambda: "owner/my-repo",
+        )
+
+        def fake_run(cmd, **kw):
+            if "pr" in cmd and "view" in cmd:
+                return subprocess.CompletedProcess(
+                    args=cmd, returncode=0,
+                    stdout=self._gh_pr_view_output(
+                        "some-branch", "OPEN", "other-owner/other-repo",
+                    ),
+                    stderr="",
+                )
+            return subprocess.CompletedProcess(args=cmd, returncode=0, stdout="", stderr="")
+
+        monkeypatch.setattr(subprocess, "run", fake_run)
+
+        args = SimpleNamespace(pr=999)
+        with pytest.raises(SystemExit) as exc_info:
+            cmd_resume(args)
+
+        assert exc_info.value.code == 1
+        captured = capsys.readouterr()
+        assert "other-owner/other-repo" in captured.err
+        assert "owner/my-repo" in captured.err
+
+    def test_same_repo_passes_validation(self, monkeypatch):
+        """cmd_resume should NOT exit when the PR belongs to the current repo."""
+        monkeypatch.setattr(
+            "autopilot_loop.cli.load_config",
+            lambda **kw: {"model": "m", "max_iterations": 3},
+        )
+        monkeypatch.setattr(
+            "autopilot_loop.github_api.get_repo_nwo",
+            lambda: "owner/my-repo",
+        )
+        monkeypatch.setattr("autopilot_loop.cli._check_branch_lock", lambda b: None)
+        monkeypatch.setattr("autopilot_loop.cli._launch_in_tmux", lambda *a, **kw: None)
+
+        def fake_run(cmd, **kw):
+            if "pr" in cmd and "view" in cmd:
+                return subprocess.CompletedProcess(
+                    args=cmd, returncode=0,
+                    stdout=self._gh_pr_view_output(
+                        "fix/something", "OPEN", "owner/my-repo",
+                    ),
+                    stderr="",
+                )
+            # git checkout
+            return subprocess.CompletedProcess(args=cmd, returncode=0, stdout="", stderr="")
+
+        monkeypatch.setattr(subprocess, "run", fake_run)
+
+        args = SimpleNamespace(pr=42)
+        # Should not raise
+        cmd_resume(args)
+
+    def test_merged_pr_wrong_repo_exits_with_repo_error(self, monkeypatch, capsys):
+        """A merged PR from a different repo should fail on repo mismatch, not state."""
+        monkeypatch.setattr(
+            "autopilot_loop.cli.load_config",
+            lambda **kw: {"model": "m", "max_iterations": 3},
+        )
+        monkeypatch.setattr(
+            "autopilot_loop.github_api.get_repo_nwo",
+            lambda: "owner/my-repo",
+        )
+
+        def fake_run(cmd, **kw):
+            if "pr" in cmd and "view" in cmd:
+                return subprocess.CompletedProcess(
+                    args=cmd, returncode=0,
+                    stdout=self._gh_pr_view_output(
+                        "some-branch", "MERGED", "other-owner/other-repo",
+                    ),
+                    stderr="",
+                )
+            return subprocess.CompletedProcess(args=cmd, returncode=0, stdout="", stderr="")
+
+        monkeypatch.setattr(subprocess, "run", fake_run)
+
+        args = SimpleNamespace(pr=16173)
+        with pytest.raises(SystemExit) as exc_info:
+            cmd_resume(args)
+
+        assert exc_info.value.code == 1
+        captured = capsys.readouterr()
+        # Should fail on repo mismatch BEFORE checking state
+        assert "other-owner/other-repo" in captured.err
