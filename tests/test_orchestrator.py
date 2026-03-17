@@ -617,3 +617,94 @@ class TestIdleTimeoutEnabled:
         orch = Orchestrator(task_id, config)
         orch._do_init()
         mock_timeout.assert_not_called()
+
+
+class TestWorkspaceDirs:
+    def test_auto_discovers_sibling_repos(self, tmp_path, monkeypatch, config):
+        """Discovers sibling git repos under the parent directory."""
+        # Create workspace layout: /workspace/repo-a (cwd), /workspace/repo-b (sibling)
+        repo_a = tmp_path / "repo-a"
+        repo_b = tmp_path / "repo-b"
+        repo_a.mkdir()
+        repo_b.mkdir()
+        (repo_a / ".git").mkdir()
+        (repo_b / ".git").mkdir()
+
+        monkeypatch.chdir(repo_a)
+        task_id = _create_test_task()
+        orch = Orchestrator(task_id, config)
+        dirs = orch._get_workspace_dirs()
+        assert str(repo_b) in dirs
+        assert str(repo_a) not in dirs
+
+    def test_ignores_non_git_dirs(self, tmp_path, monkeypatch, config):
+        """Non-git directories are not included."""
+        repo = tmp_path / "repo"
+        plain = tmp_path / "plain-dir"
+        repo.mkdir()
+        plain.mkdir()
+        (repo / ".git").mkdir()
+        # plain has no .git
+
+        monkeypatch.chdir(repo)
+        task_id = _create_test_task()
+        orch = Orchestrator(task_id, config)
+        dirs = orch._get_workspace_dirs()
+        assert str(plain) not in dirs
+
+    def test_config_override_replaces_auto(self, tmp_path, monkeypatch, config):
+        """add_dirs config overrides auto-discovery."""
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        (repo / ".git").mkdir()
+
+        monkeypatch.chdir(repo)
+        config["add_dirs"] = ["/custom/path"]
+        task_id = _create_test_task()
+        orch = Orchestrator(task_id, config)
+        dirs = orch._get_workspace_dirs()
+        assert dirs == ["/custom/path"]
+
+    def test_config_empty_list_disables(self, tmp_path, monkeypatch, config):
+        """add_dirs: [] disables auto-discovery."""
+        repo_a = tmp_path / "repo-a"
+        repo_b = tmp_path / "repo-b"
+        repo_a.mkdir()
+        repo_b.mkdir()
+        (repo_a / ".git").mkdir()
+        (repo_b / ".git").mkdir()
+
+        monkeypatch.chdir(repo_a)
+        config["add_dirs"] = []
+        task_id = _create_test_task()
+        orch = Orchestrator(task_id, config)
+        dirs = orch._get_workspace_dirs()
+        assert dirs == []
+
+    def test_extra_flags_built_from_dirs(self, tmp_path, monkeypatch, config):
+        """_get_extra_flags() produces --add-dir pairs."""
+        repo_a = tmp_path / "repo-a"
+        repo_b = tmp_path / "repo-b"
+        repo_a.mkdir()
+        repo_b.mkdir()
+        (repo_a / ".git").mkdir()
+        (repo_b / ".git").mkdir()
+
+        monkeypatch.chdir(repo_a)
+        task_id = _create_test_task()
+        orch = Orchestrator(task_id, config)
+        flags = orch._get_extra_flags()
+        assert "--add-dir" in flags
+        assert str(repo_b) in flags
+
+    def test_no_siblings_returns_none(self, tmp_path, monkeypatch, config):
+        """No sibling repos returns None (no extra flags)."""
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        (repo / ".git").mkdir()
+
+        monkeypatch.chdir(repo)
+        task_id = _create_test_task()
+        orch = Orchestrator(task_id, config)
+        flags = orch._get_extra_flags()
+        assert flags is None
