@@ -133,6 +133,37 @@ class BaseOrchestrator:
         """Return the state to transition to after INIT. Subclasses must override."""
         raise NotImplementedError
 
+    def _get_extra_flags(self):
+        """Build extra CLI flags for the agent (e.g. --add-dir for sibling repos)."""
+        flags = []
+        for d in self._get_workspace_dirs():
+            flags.extend(["--add-dir", d])
+        return flags if flags else None
+
+    def _get_workspace_dirs(self):
+        """Discover sibling git repos in the workspace to give the agent read access.
+
+        Auto-detects repos under the parent of CWD (e.g. /workspaces/*/).
+        Excludes the current repo. Can be overridden via config add_dirs.
+        """
+        configured = self.config.get("add_dirs")
+        if configured is not None:
+            return configured
+
+        cwd = os.getcwd()
+        parent = os.path.dirname(cwd)
+        dirs = []
+        try:
+            for name in os.listdir(parent):
+                candidate = os.path.join(parent, name)
+                if candidate == cwd:
+                    continue
+                if os.path.isdir(os.path.join(candidate, ".git")):
+                    dirs.append(candidate)
+        except OSError:
+            pass
+        return dirs
+
     def _run_agent_with_retry(self, phase, prompt, session_name):
         """Run an agent with retry policy.
 
@@ -156,6 +187,7 @@ class BaseOrchestrator:
                 session_dir=phase_session_dir,
                 model=self.config.get("model", "claude-opus-4.6"),
                 timeout=self.config.get("agent_timeout_seconds", 1800),
+                extra_flags=self._get_extra_flags(),
             )
             ended_at = time.time()
 

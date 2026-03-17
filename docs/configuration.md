@@ -43,6 +43,12 @@ Search order (first found wins):
 | `branch_pattern` | string | `"autopilot/{task_id}"` | Branch naming pattern. Must contain `{task_id}`. |
 | `custom_instructions` | string | `""` | Extra instructions appended to every agent prompt. Use for repo-specific context (test commands, lint rules, etc.). |
 
+### Workspace
+
+| Field | Type | Default | Description |
+|---|---|---|---|
+| `add_dirs` | list or null | `null` (auto) | Directories to give the agent read access to via `--add-dir`. By default, all sibling git repos in the workspace are auto-discovered. Set to `[]` to disable, or `["/path/to/repo"]` to override. |
+
 ### Review Loop
 
 | Field | Type | Default | Description |
