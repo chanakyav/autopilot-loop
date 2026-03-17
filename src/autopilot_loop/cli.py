@@ -251,6 +251,15 @@ def cmd_resume(args):
         print("Error: could not fetch PR #%d: %s" % (args.pr, e), file=sys.stderr)
         sys.exit(1)
 
+    # Branch locking: prevent concurrent tasks on the same branch
+    conflicting = get_tasks_on_branch(branch)
+    if conflicting:
+        print("Error: branch %s already has an active task: %s (state: %s)" % (
+            branch, conflicting[0]["id"], conflicting[0]["state"]), file=sys.stderr)
+        print("Use 'autopilot stop %s' first." % conflicting[0]["id"],
+              file=sys.stderr)
+        sys.exit(1)
+
     task_id = _generate_task_id()
 
     create_task(
@@ -407,6 +416,15 @@ def cmd_fix_ci(args):
         subprocess.run(["git", "checkout", branch], check=True)
     except subprocess.CalledProcessError as e:
         print("Error: could not fetch PR #%d: %s" % (args.pr, e), file=sys.stderr)
+        sys.exit(1)
+
+    # Branch locking: prevent concurrent tasks on the same branch
+    conflicting = get_tasks_on_branch(branch)
+    if conflicting:
+        print("Error: branch %s already has an active task: %s (state: %s)" % (
+            branch, conflicting[0]["id"], conflicting[0]["state"]), file=sys.stderr)
+        print("Use 'autopilot stop %s' first." % conflicting[0]["id"],
+              file=sys.stderr)
         sys.exit(1)
 
     # Get failed checks
