@@ -374,3 +374,24 @@ class TestReadKey:
         finally:
             os.close(r)
             os.close(w)
+
+
+class TestMakeConsole:
+    def test_no_color_env_respected(self, monkeypatch):
+        monkeypatch.setenv("NO_COLOR", "1")
+        from autopilot_loop.dashboard import _make_console
+        console = _make_console()
+        assert console.no_color is True
+
+    def test_color_enabled_by_default(self, monkeypatch):
+        monkeypatch.delenv("NO_COLOR", raising=False)
+        from autopilot_loop.dashboard import _make_console
+        console = _make_console()
+        assert console.no_color is False
+
+    def test_no_color_empty_string(self, monkeypatch):
+        # NO_COLOR spec: presence of the var (any value) disables color
+        monkeypatch.setenv("NO_COLOR", "")
+        from autopilot_loop.dashboard import _make_console
+        console = _make_console()
+        assert console.no_color is True

@@ -598,3 +598,22 @@ class TestExistingBranchImplement:
         call_args = mock_run.call_args
         prompt = call_args[1]["prompt"] if "prompt" in call_args[1] else call_args[0][0]
         assert "Create a new git branch" in prompt or "git checkout -b" in prompt
+
+
+class TestIdleTimeoutEnabled:
+    @patch("autopilot_loop.orchestrator.set_idle_timeout")
+    def test_idle_timeout_called_when_enabled(self, mock_timeout, config):
+        """Default config (enabled=True) should call set_idle_timeout."""
+        task_id = _create_test_task()
+        orch = Orchestrator(task_id, config)
+        orch._do_init()
+        mock_timeout.assert_called_once()
+
+    @patch("autopilot_loop.orchestrator.set_idle_timeout")
+    def test_idle_timeout_skipped_when_disabled(self, mock_timeout, config):
+        """idle_timeout_enabled=False should skip set_idle_timeout."""
+        config["idle_timeout_enabled"] = False
+        task_id = _create_test_task()
+        orch = Orchestrator(task_id, config)
+        orch._do_init()
+        mock_timeout.assert_not_called()

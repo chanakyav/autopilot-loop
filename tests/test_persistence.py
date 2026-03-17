@@ -158,6 +158,14 @@ def test_get_tasks_on_branch_excludes_terminal():
     assert len(tasks) == 0
 
 
+def test_terminal_states_constant():
+    """TERMINAL_STATES is defined in persistence and contains the expected values."""
+    assert "COMPLETE" in persistence.TERMINAL_STATES
+    assert "FAILED" in persistence.TERMINAL_STATES
+    assert "STOPPED" in persistence.TERMINAL_STATES
+    assert len(persistence.TERMINAL_STATES) == 3
+
+
 def test_last_review_id_persisted():
     persistence.create_task("t1", "prompt")
     task = persistence.get_task("t1")

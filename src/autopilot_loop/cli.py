@@ -49,6 +49,17 @@ def _validate_task_id(task_id):
         sys.exit(1)
 
 
+def _check_branch_lock(branch):
+    """Exit with error if another active task is already on this branch."""
+    conflicting = get_tasks_on_branch(branch)
+    if conflicting:
+        print("Error: branch %s already has an active task: %s (state: %s)" % (
+            branch, conflicting[0]["id"], conflicting[0]["state"]), file=sys.stderr)
+        print("Use 'autopilot stop %s' first." % conflicting[0]["id"],
+              file=sys.stderr)
+        sys.exit(1)
+
+
 def _detect_autopilot_branch():
     """If the current git branch matches autopilot/*, return the branch name.
 
@@ -155,14 +166,7 @@ def cmd_start(args):
     else:
         branch = config["branch_pattern"].format(task_id=task_id)
 
-    # Branch locking: prevent concurrent tasks on the same branch
-    conflicting = get_tasks_on_branch(branch)
-    if conflicting:
-        print("Error: branch %s already has an active task: %s (state: %s)" % (
-            branch, conflicting[0]["id"], conflicting[0]["state"]), file=sys.stderr)
-        print("Use 'autopilot stop %s' first, or work on a different branch." % conflicting[0]["id"],
-              file=sys.stderr)
-        sys.exit(1)
+    _check_branch_lock(branch)
 
     create_task(
         task_id=task_id,
@@ -250,6 +254,8 @@ def cmd_resume(args):
     except subprocess.CalledProcessError as e:
         print("Error: could not fetch PR #%d: %s" % (args.pr, e), file=sys.stderr)
         sys.exit(1)
+
+    _check_branch_lock(branch)
 
     task_id = _generate_task_id()
 
@@ -408,6 +414,8 @@ def cmd_fix_ci(args):
     except subprocess.CalledProcessError as e:
         print("Error: could not fetch PR #%d: %s" % (args.pr, e), file=sys.stderr)
         sys.exit(1)
+
+    _check_branch_lock(branch)
 
     # Get failed checks
     failed_checks = get_failed_checks(args.pr)
