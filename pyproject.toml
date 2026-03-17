@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "autopilot-loop"
-version = "0.1.0"
+version = "0.2.1"
 description = "Headless orchestrator that automates the Copilot coding-review-fix cycle"
 readme = "README.md"
 license = {file = "LICENSE"}
