@@ -241,13 +241,25 @@ def cmd_resume(args):
     try:
         result = subprocess.run(
             ["gh", "pr", "view", str(args.pr),
-             "--json", "headRefName,state",
-             "--jq", '[.headRefName, .state] | @tsv'],
+             "--json", "headRefName,state,headRepository",
+             "--jq", '[.headRefName, .state, .headRepository.nameWithOwner] | @tsv'],
             capture_output=True, text=True, check=True,
         )
         parts = result.stdout.strip().split("\t")
         branch = parts[0]
         pr_state = parts[1] if len(parts) > 1 else "UNKNOWN"
+        pr_repo = parts[2] if len(parts) > 2 else ""
+
+        # Ensure the PR belongs to the current repo
+        from autopilot_loop.github_api import get_repo_nwo
+        local_nwo = get_repo_nwo()
+        if pr_repo and pr_repo != local_nwo:
+            print(
+                "Error: PR #%d belongs to %s, but you're in %s"
+                % (args.pr, pr_repo, local_nwo),
+                file=sys.stderr,
+            )
+            sys.exit(1)
 
         if pr_state != "OPEN":
             print("Error: PR #%d is %s (must be OPEN to resume)" % (args.pr, pr_state),
