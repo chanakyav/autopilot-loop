@@ -195,6 +195,10 @@ def cmd_start(args):
 
     _launch_in_tmux(task_id, mode="review", branch=branch)
 
+    if not args.no_follow and sys.stdout.isatty():
+        from autopilot_loop.dashboard import logs_tui
+        logs_tui(task_id)
+
 
 def cmd_run(args):
     """Internal: run the orchestrator for a task (called from tmux)."""
@@ -678,6 +682,8 @@ def main():
     p_start.add_argument("--max-iters", type=int, help="Max review-fix iterations")
     p_start.add_argument("--dry-run", action="store_true",
                          help="Show what would run without starting agents or tmux")
+    p_start.add_argument("--no-follow", action="store_true",
+                         help="Don't auto-open log viewer after start")
 
     # resume
     p_resume = subparsers.add_parser("resume", help="Resume from an existing PR")

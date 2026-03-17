@@ -302,9 +302,9 @@ def _build_footer_main():
     footer = Text()
     keys = [
         ("j/k", "navigate"),
-        ("Enter", "attach"),
+        ("Enter", "logs"),
         ("x", "stop"),
-        ("l", "logs"),
+        ("a", "tmux"),
         ("d", "detail"),
         ("r", "refresh"),
         ("q", "quit"),
@@ -324,7 +324,7 @@ def _build_footer_detail():
     keys = [
         ("j/k", "navigate"),
         ("d", "close detail"),
-        ("l", "full logs"),
+        ("Enter", "full logs"),
         ("q", "quit"),
     ]
     for i, (key, action) in enumerate(keys):
@@ -467,6 +467,8 @@ def _read_key(fd, timeout=2.0):
         return "refresh"
     if b == ord("l"):
         return "logs"
+    if b == ord("a"):
+        return "attach"
     if b == ord("d") or b == ord(" "):
         return "detail"
     if b == ord("G"):
@@ -712,6 +714,40 @@ def _logs_view(fd, old_settings, task_id, interval=2):
 
 
 # ---------------------------------------------------------------------------
+# Standalone log viewer (for auto-follow after start)
+# ---------------------------------------------------------------------------
+
+def logs_tui(task_id, interval=2):
+    """Open the full-screen log viewer for a single task.
+
+    Handles terminal setup/teardown. Falls back silently if not a TTY
+    or termios is unavailable.
+    """
+    if not sys.stdin.isatty():
+        return
+
+    try:
+        import termios
+    except ImportError:
+        return
+
+    fd = sys.stdin.fileno()
+    try:
+        old_settings = termios.tcgetattr(fd)
+    except termios.error:
+        return
+
+    try:
+        _enter_tui()
+        _logs_view(fd, old_settings, task_id, interval)
+    except KeyboardInterrupt:
+        pass
+    finally:
+        termios.tcsetattr(fd, termios.TCSADRAIN, old_settings)
+        _exit_tui()
+
+
+# ---------------------------------------------------------------------------
 # Interactive TUI (main entry point)
 # ---------------------------------------------------------------------------
 
@@ -719,7 +755,7 @@ def status_interactive(interval=2):
     """Full-screen interactive dashboard with keybindings.
 
     Features:
-    - j/k navigate, Enter attach, x stop, l logs, d detail, r refresh, q quit
+    - j/k navigate, Enter/l logs, x stop, a tmux, d detail, r refresh, q quit
     - Animated spinners for active states
     - Detail panel toggle showing task metadata + log tail
     - Full log viewer with j/k scroll
@@ -823,7 +859,17 @@ def status_interactive(interval=2):
                 if tasks:
                     selected = max(selected - 1, 0)
 
-            elif key == "enter":
+            elif key == "enter" or key == "logs":
+                tasks = list_tasks()
+                if tasks and 0 <= selected < len(tasks):
+                    msg = _logs_view(fd, old_settings, tasks[selected]["id"], interval)
+                    if msg:
+                        set_status(msg)
+                    # Full clear after returning from log viewer
+                    sys.stdout.write(_CLEAR_SCREEN)
+                    sys.stdout.flush()
+
+            elif key == "attach":
                 tasks = list_tasks()
                 if tasks and 0 <= selected < len(tasks):
                     msg = _do_attach(tasks[selected])
@@ -840,16 +886,6 @@ def status_interactive(interval=2):
                 detail_open = not detail_open
                 sys.stdout.write(_CLEAR_SCREEN)
                 sys.stdout.flush()
-
-            elif key == "logs":
-                tasks = list_tasks()
-                if tasks and 0 <= selected < len(tasks):
-                    msg = _logs_view(fd, old_settings, tasks[selected]["id"], interval)
-                    if msg:
-                        set_status(msg)
-                    # Full clear after returning from log viewer
-                    sys.stdout.write(_CLEAR_SCREEN)
-                    sys.stdout.flush()
 
             elif key == "refresh":
                 set_status("Refreshed")
