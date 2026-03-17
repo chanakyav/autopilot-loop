@@ -23,6 +23,7 @@ from autopilot_loop.dashboard import (
     _read_key,
     _read_log_tail,
     logs_tui,
+    status_interactive,
 )
 
 
@@ -188,25 +189,31 @@ class TestFooters:
     def test_main_footer_has_all_keys(self):
         footer = _build_footer_main()
         text = str(footer)
-        for key in ["j/k", "Enter", "x", "a", "d", "r", "q"]:
+        for key in ["j/k", "Enter/l", "x", "a", "d", "r", "q"]:
             assert key in text
         assert "logs" in text
-        assert "tmux" in text
-        # "attach" should no longer appear in footer
-        assert "attach" not in text
+        assert "attach" in text
+        assert "close" in text
 
     def test_detail_footer_has_close(self):
         footer = _build_footer_detail()
         text = str(footer)
-        assert "close" in text
+        assert "close detail" in text
         assert "Enter" in text
-        assert "full logs" in text
+        assert "logs" in text
+        assert "x" in text
+        assert "attach" in text
+        assert "r" in text
+        assert "q/Esc" in text
+        assert "back" in text
 
     def test_logs_footer_has_scroll(self):
         footer = _build_footer_logs()
         text = str(footer)
         assert "scroll" in text
         assert "G" in text
+        assert "q/Esc" in text
+        assert "back" in text
 
     def test_status_message_empty(self):
         msg = _build_status_message("")
@@ -446,3 +453,77 @@ class TestLogsTui:
         monkeypatch.setattr(dash, "_logs_view", fake_logs_view)
         logs_tui("abc12345", interval=3)
         assert calls == [("abc12345", 3)]
+
+
+# ---------------------------------------------------------------------------
+# Exit reassurance message
+# ---------------------------------------------------------------------------
+
+class TestExitReassurance:
+    def test_prints_reassurance_when_active_tasks(self, monkeypatch, capsys):
+        """When active tasks exist, closing the TUI prints a reassurance."""
+        import autopilot_loop.dashboard as dash
+
+        monkeypatch.setattr(dash, "_enter_tui", lambda: None)
+        monkeypatch.setattr(dash, "_exit_tui", lambda: None)
+
+        import termios
+        monkeypatch.setattr(termios, "tcgetattr", lambda fd: [])
+        monkeypatch.setattr(termios, "tcsetattr", lambda fd, w, s: None)
+
+        # Fake _read_key to immediately return "quit"
+        monkeypatch.setattr(dash, "_read_key", lambda fd, timeout=2: "quit")
+        # Fake render_main to avoid real rendering
+        monkeypatch.setattr(dash, "_make_console", lambda: None)
+        monkeypatch.setattr(dash, "_render_frame", lambda c, content: None)
+        # Fake stdin as a tty
+        monkeypatch.setattr("sys.stdin", type("FakeTTY", (), {
+            "isatty": lambda self: True,
+            "fileno": lambda self: 0,
+        })())
+
+        # Fake tty.setraw to no-op
+        import tty
+        monkeypatch.setattr(tty, "setraw", lambda fd: None)
+
+        # Simulate one active task
+        monkeypatch.setattr(
+            dash, "get_active_tasks",
+            lambda: [{"id": "t1", "state": "WORKING"}],
+        )
+        # Fake list_tasks and render_main
+        monkeypatch.setattr(dash, "list_tasks", lambda: [])
+
+        status_interactive(interval=0.01)
+        captured = capsys.readouterr()
+        assert "still running" in captured.out
+        assert "autopilot status" in captured.out
+
+    def test_no_reassurance_when_no_active_tasks(self, monkeypatch, capsys):
+        """When no active tasks, closing the TUI prints nothing."""
+        import autopilot_loop.dashboard as dash
+
+        monkeypatch.setattr(dash, "_enter_tui", lambda: None)
+        monkeypatch.setattr(dash, "_exit_tui", lambda: None)
+
+        import termios
+        monkeypatch.setattr(termios, "tcgetattr", lambda fd: [])
+        monkeypatch.setattr(termios, "tcsetattr", lambda fd, w, s: None)
+
+        monkeypatch.setattr(dash, "_read_key", lambda fd, timeout=2: "quit")
+        monkeypatch.setattr(dash, "_make_console", lambda: None)
+        monkeypatch.setattr(dash, "_render_frame", lambda c, content: None)
+        monkeypatch.setattr("sys.stdin", type("FakeTTY", (), {
+            "isatty": lambda self: True,
+            "fileno": lambda self: 0,
+        })())
+
+        import tty
+        monkeypatch.setattr(tty, "setraw", lambda fd: None)
+
+        monkeypatch.setattr(dash, "get_active_tasks", lambda: [])
+        monkeypatch.setattr(dash, "list_tasks", lambda: [])
+
+        status_interactive(interval=0.01)
+        captured = capsys.readouterr()
+        assert "still running" not in captured.out

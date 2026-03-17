@@ -302,12 +302,12 @@ def _build_footer_main():
     footer = Text()
     keys = [
         ("j/k", "navigate"),
-        ("Enter", "logs"),
+        ("Enter/l", "logs"),
         ("x", "stop"),
-        ("a", "tmux"),
+        ("a", "attach"),
         ("d", "detail"),
         ("r", "refresh"),
-        ("q", "quit"),
+        ("q", "close"),
     ]
     for i, (key, action) in enumerate(keys):
         if i > 0:
@@ -323,9 +323,12 @@ def _build_footer_detail():
     footer = Text()
     keys = [
         ("j/k", "navigate"),
+        ("Enter", "logs"),
+        ("x", "stop"),
+        ("a", "attach"),
         ("d", "close detail"),
-        ("Enter", "full logs"),
-        ("q", "quit"),
+        ("r", "refresh"),
+        ("q/Esc", "back"),
     ]
     for i, (key, action) in enumerate(keys):
         if i > 0:
@@ -344,7 +347,7 @@ def _build_footer_logs():
         ("Ctrl-D/U", "page"),
         ("G", "end"),
         ("g", "top"),
-        ("q", "back"),
+        ("q/Esc", "back"),
     ]
     for i, (key, action) in enumerate(keys):
         if i > 0:
@@ -897,3 +900,6 @@ def status_interactive(interval=2):
     finally:
         termios.tcsetattr(fd, termios.TCSADRAIN, old_settings)
         _exit_tui()
+        if get_active_tasks():
+            print("Tasks still running in background. "
+                  "Use 'autopilot status' to check progress.")
