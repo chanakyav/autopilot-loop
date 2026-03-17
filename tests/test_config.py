@@ -17,6 +17,7 @@ def test_defaults_returned_with_no_config_file():
     assert config["review_timeout_seconds"] == 3600
     assert config["agent_timeout_seconds"] == 1800
     assert config["idle_timeout_minutes"] == 120
+    assert config["idle_timeout_enabled"] is True
     assert config["keepalive_enabled"] is False
     assert "{task_id}" in config["branch_pattern"]
 

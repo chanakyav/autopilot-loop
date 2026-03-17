@@ -17,15 +17,25 @@
 - **TUI uses alternate screen buffer** — `_enter_tui()` / `_exit_tui()` in dashboard.py; always restore terminal in a `finally` block
 - **Persistence changes need schema migration** — bump `SCHEMA_VERSION`, add to `_MIGRATIONS` list, add column to `SCHEMA`, add to `_TASK_COLUMNS` frozenset
 - **Terminal states are `COMPLETE`, `FAILED`, `STOPPED`** — use `TERMINAL_STATES` from persistence (canonical source) or `_TERMINAL_STATES` from dashboard, not hardcoded tuples
-- **Branch locking** — `get_tasks_on_branch()` prevents concurrent tasks on the same branch
+- **Branch locking** — `_check_branch_lock(branch)` prevents concurrent tasks on the same branch; use it in every command that creates a task on a branch
+
+## When Adding New Code
+
+1. **Write tests** for every new function, helper, or behavior — no untested code ships
+2. **Run lint + tests** before committing: `python3 -m ruff check src/ tests/ && python3 -m pytest tests/`
+3. **Refactor duplication** — if logic appears in 2+ places, extract a helper (e.g. `_check_branch_lock`)
+4. **Test edge cases** — invalid input, empty state, terminal states, error paths
+5. **Test file placement** — CLI helpers in `test_cli.py`, dashboard in `test_dashboard.py`, etc.
 
 ## When Adding a New CLI Command
 
 1. Add `cmd_<name>(args)` function in `cli.py`
 2. Add parser in `main()` under the subparsers section
 3. Add dispatch in the `if/elif` chain in `main()`
-4. Update the module docstring at the top of `cli.py`
-5. Update the Commands section in `README.md`
+4. Add `_check_branch_lock(branch)` if the command creates a task on a branch
+5. Add tests in `test_cli.py` for the new command's helpers/validation
+6. Update the module docstring at the top of `cli.py`
+7. Update the Commands section in `README.md`
 
 ## When Modifying the Database Schema
 
