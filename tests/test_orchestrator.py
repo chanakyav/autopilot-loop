@@ -1,5 +1,6 @@
 """Tests for the orchestrator state machine."""
 
+import os
 from unittest.mock import patch
 
 import pytest
@@ -617,6 +618,62 @@ class TestIdleTimeoutEnabled:
         orch = Orchestrator(task_id, config)
         orch._do_init()
         mock_timeout.assert_not_called()
+
+
+class TestFixContextCarryForward:
+    def test_no_previous_summary_returns_empty(self, config):
+        """First iteration has no previous context."""
+        task_id = _create_test_task()
+        persistence.update_task(task_id, iteration=1)
+        orch = Orchestrator(task_id, config)
+        assert orch._load_previous_fix_summary(1) == ""
+
+    def test_loads_previous_summary(self, config):
+        """Loads and formats the previous iteration's fix summary."""
+        import json as _json
+
+        task_id = _create_test_task()
+        orch = Orchestrator(task_id, config)
+
+        # Write a fake fix summary for iteration 1
+        summary = [
+            {"comment_id": 42, "status": "fixed", "message": "Extracted billing concern"},
+            {"comment_id": 43, "status": "skipped", "message": "Current pattern is idiomatic"},
+        ]
+        summary_path = os.path.join(orch.sessions_dir, "fix-summary-1.json")
+        with open(summary_path, "w") as f:
+            _json.dump(summary, f)
+
+        result = orch._load_previous_fix_summary(2)
+        assert "Comment 42: FIXED" in result
+        assert "Extracted billing concern" in result
+        assert "Comment 43: SKIPPED" in result
+        assert "Current pattern is idiomatic" in result
+        assert "STILL unresolved" in result
+
+    def test_missing_summary_file_returns_empty(self, config):
+        """Returns empty string if summary file doesn't exist."""
+        task_id = _create_test_task()
+        orch = Orchestrator(task_id, config)
+        assert orch._load_previous_fix_summary(3) == ""
+
+
+class TestFixPromptPreviousContext:
+    def test_previous_context_included_in_prompt(self):
+        """fix_prompt includes previous context when provided."""
+        from autopilot_loop.prompts import fix_prompt
+        prompt = fix_prompt(
+            review_comments_text="some comments",
+            previous_context="- Comment 42: FIXED — did a thing",
+        )
+        assert "Previous Iteration Context" in prompt
+        assert "Comment 42: FIXED" in prompt
+
+    def test_no_previous_context(self):
+        """fix_prompt omits section when no previous context."""
+        from autopilot_loop.prompts import fix_prompt
+        prompt = fix_prompt(review_comments_text="some comments")
+        assert "Previous Iteration Context" not in prompt
 
 
 class TestWorkspaceDirs:
