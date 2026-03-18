@@ -23,7 +23,6 @@ from autopilot_loop.github_api import (
     get_failed_checks,
     get_head_sha,
     get_unresolved_review_comments,
-    is_copilot_review_complete,
     reply_to_comment,
     request_copilot_review,
     resolve_review_thread,
@@ -268,7 +267,6 @@ class Orchestrator(BaseOrchestrator):
 
     def __init__(self, task_id, config):
         super().__init__(task_id, config)
-        self._last_review_ts = None  # timestamp-based review detection
 
     def _get_handlers(self):
         return {
@@ -298,13 +296,6 @@ class Orchestrator(BaseOrchestrator):
     def _do_implement(self):
         """Run copilot agent with implement prompt."""
         branch = self.task["branch"]
-
-        # Snapshot review timestamp before the agent pushes (same pattern as _do_fix)
-        pr_number = self.task.get("pr_number")
-        if pr_number:
-            current_review = get_copilot_review(pr_number)
-            if current_review:
-                self._last_review_ts = current_review.get("submitted_at", "")
 
         # Use existing-branch prompt if the branch already exists remotely
         if self.task.get("existing_branch"):
@@ -401,14 +392,21 @@ class Orchestrator(BaseOrchestrator):
         return "WAIT_REVIEW"
 
     def _do_wait_review(self):
-        """Poll for Copilot review completion."""
+        """Poll for new unresolved Copilot review comments.
+
+        After RESOLVE_COMMENTS resolves all threads and REQUEST_REVIEW
+        requests a fresh review, we poll for new unresolved comments.
+        A minimum initial wait gives Copilot time to start reviewing.
+        """
         pr_number = self.task["pr_number"]
         poll_interval = self.config.get("review_poll_interval_seconds", 60)
         timeout = self.config.get("review_timeout_seconds", 3600)
+        min_wait = min(poll_interval, 60)
         start_time = time.time()
 
-        logger.info("[%s] Polling every %ds for Copilot review (timeout: %ds)...",
-                    self.task_id, poll_interval, timeout)
+        logger.info("[%s] Waiting %ds before first poll, then every %ds (timeout: %ds)...",
+                    self.task_id, min_wait, poll_interval, timeout)
+        time.sleep(min_wait)
 
         while True:
             elapsed = time.time() - start_time
@@ -419,11 +417,18 @@ class Orchestrator(BaseOrchestrator):
                 )
                 return "COMPLETE"
 
-            if is_copilot_review_complete(pr_number, after_ts=self._last_review_ts):
-                logger.info("[%s] ✓ Copilot review received", self.task_id)
+            comments = get_unresolved_review_comments(pr_number)
+            if comments:
+                logger.info("[%s] ✓ Found %d unresolved Copilot comments",
+                            self.task_id, len(comments))
                 return "PARSE_REVIEW"
 
-            logger.debug("[%s] No review yet, waiting %ds... (%.0f/%ds elapsed)",
+            review = get_copilot_review(pr_number)
+            if review and review.get("state") == "APPROVED":
+                logger.info("[%s] ✓ Copilot approved the PR", self.task_id)
+                return "COMPLETE"
+
+            logger.debug("[%s] No new comments yet, waiting %ds... (%.0f/%ds elapsed)",
                          self.task_id, poll_interval, elapsed, timeout)
             time.sleep(poll_interval)
 
@@ -544,14 +549,6 @@ class Orchestrator(BaseOrchestrator):
 
         # Record head SHA before fix
         self._pre_fix_sha = get_head_sha(self.task["branch"])
-
-        # Snapshot the review timestamp BEFORE the agent pushes,
-        # so any review arriving after the push (auto-triggered or
-        # explicitly requested) has a newer submitted_at timestamp.
-        current_review = get_copilot_review(pr_number)
-        if current_review:
-            self._last_review_ts = current_review.get("submitted_at", "")
-            logger.debug("[%s] Snapshot review timestamp before fix: %s", self.task_id, self._last_review_ts)
 
         result = self._run_agent_with_retry("FIX", prompt, "fix-%d" % iteration)
         if result is None:
