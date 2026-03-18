@@ -51,3 +51,17 @@
 - Link issues with `Closes #N` in PR descriptions
 - Batch related changes into one PR when they touch the same scope
 - Keep CI green — check `gh pr checks <N>` before merging
+
+## GitHub Issues, PRs & Comments
+
+When creating or updating issues, PRs, or comments via `gh` CLI, always add a footer line:
+
+```
+---
+🤖 *autopilot-loop*
+```
+
+This identifies automated contributions. Use this on:
+- Issue bodies and comments
+- PR bodies
+- Review comment replies
