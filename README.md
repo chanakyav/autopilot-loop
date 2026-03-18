@@ -98,15 +98,9 @@ See [Configuration Reference](docs/configuration.md) for all options.
 
 Run `autopilot doctor` to verify your setup.
 
-## Local Development
+## Contributing
 
-```bash
-git clone https://github.com/chanakyav/autopilot-loop.git
-cd autopilot-loop
-python3 -m venv .venv && source .venv/bin/activate
-pip install -e ".[dev]"
-python -m pytest tests/ -v
-```
+See [CONTRIBUTING.md](CONTRIBUTING.md) for development setup, code conventions, and how to submit a clean PR.
 
 ## License
 
