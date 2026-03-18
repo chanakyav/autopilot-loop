@@ -15,6 +15,7 @@ from autopilot_loop.github_api import (
     get_issue,
     get_repo_nwo,
     get_unresolved_review_comments,
+    is_copilot_review_complete,
     reply_to_comment,
     request_copilot_review,
     resolve_review_thread,
@@ -99,25 +100,26 @@ class TestGetCopilotReview:
             ]
             assert get_copilot_review(42) is None
 
-    def test_after_id_filters_old(self):
-        review_data = {"id": 100, "body": "old review", "state": "COMMENTED"}
+    def test_after_ts_filters_old(self):
+        review_data = {"id": 100, "body": "old review", "state": "COMMENTED",
+                       "submitted_at": "2026-03-18T08:00:00Z"}
         with patch("autopilot_loop.github_api._run_gh") as mock_gh:
             mock_gh.side_effect = [
                 "octocat/hello-world",
                 json.dumps(review_data),
             ]
-            # Review id 100 is not > after_id 100
-            assert get_copilot_review(42, after_id=100) is None
+            # Same timestamp means not newer
+            assert is_copilot_review_complete(42, after_ts="2026-03-18T08:00:00Z") is False
 
-    def test_after_id_allows_new(self):
-        review_data = {"id": 200, "body": "new review", "state": "COMMENTED"}
+    def test_after_ts_allows_new(self):
+        review_data = {"id": 200, "body": "new review", "state": "COMMENTED",
+                       "submitted_at": "2026-03-18T09:00:00Z"}
         with patch("autopilot_loop.github_api._run_gh") as mock_gh:
             mock_gh.side_effect = [
                 "octocat/hello-world",
                 json.dumps(review_data),
             ]
-            result = get_copilot_review(42, after_id=100)
-            assert result == review_data
+            assert is_copilot_review_complete(42, after_ts="2026-03-18T08:00:00Z") is True
 
 
 class TestReplyToComment:
