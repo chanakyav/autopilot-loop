@@ -268,7 +268,7 @@ class Orchestrator(BaseOrchestrator):
 
     def __init__(self, task_id, config):
         super().__init__(task_id, config)
-        self._last_review_id = self.task.get("last_review_id")  # restore from DB
+        self._last_review_ts = None  # timestamp-based review detection
 
     def _get_handlers(self):
         return {
@@ -299,13 +299,12 @@ class Orchestrator(BaseOrchestrator):
         """Run copilot agent with implement prompt."""
         branch = self.task["branch"]
 
-        # Snapshot review ID before the agent pushes (same pattern as _do_fix)
+        # Snapshot review timestamp before the agent pushes (same pattern as _do_fix)
         pr_number = self.task.get("pr_number")
         if pr_number:
             current_review = get_copilot_review(pr_number)
             if current_review:
-                self._last_review_id = current_review.get("id", 0)
-                update_task(self.task_id, last_review_id=self._last_review_id)
+                self._last_review_ts = current_review.get("submitted_at", "")
 
         # Use existing-branch prompt if the branch already exists remotely
         if self.task.get("existing_branch"):
@@ -420,7 +419,7 @@ class Orchestrator(BaseOrchestrator):
                 )
                 return "COMPLETE"
 
-            if is_copilot_review_complete(pr_number, after_id=self._last_review_id):
+            if is_copilot_review_complete(pr_number, after_ts=self._last_review_ts):
                 logger.info("[%s] ✓ Copilot review received", self.task_id)
                 return "PARSE_REVIEW"
 
@@ -546,14 +545,13 @@ class Orchestrator(BaseOrchestrator):
         # Record head SHA before fix
         self._pre_fix_sha = get_head_sha(self.task["branch"])
 
-        # Snapshot the current latest review ID BEFORE the agent pushes,
-        # so any review that arrives after the push (auto-triggered or
-        # explicitly requested) has a higher ID than the snapshot.
+        # Snapshot the review timestamp BEFORE the agent pushes,
+        # so any review arriving after the push (auto-triggered or
+        # explicitly requested) has a newer submitted_at timestamp.
         current_review = get_copilot_review(pr_number)
         if current_review:
-            self._last_review_id = current_review.get("id", 0)
-            update_task(self.task_id, last_review_id=self._last_review_id)
-            logger.debug("[%s] Snapshot review ID before fix: %s", self.task_id, self._last_review_id)
+            self._last_review_ts = current_review.get("submitted_at", "")
+            logger.debug("[%s] Snapshot review timestamp before fix: %s", self.task_id, self._last_review_ts)
 
         result = self._run_agent_with_retry("FIX", prompt, "fix-%d" % iteration)
         if result is None:

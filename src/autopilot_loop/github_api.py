@@ -126,15 +126,11 @@ def request_copilot_review(pr_number):
     logger.info("Requested Copilot review on PR #%d", pr_number)
 
 
-def get_copilot_review(pr_number, after_id=None):
+def get_copilot_review(pr_number):
     """Get the latest Copilot review for a PR.
 
-    Args:
-        pr_number: PR number.
-        after_id: If set, only return a review with id > after_id.
-
     Returns:
-        Dict with review data, or None if no matching Copilot review exists.
+        Dict with review data (including id and submitted_at), or None.
     """
     nwo = get_repo_nwo()
     output = _run_gh([
@@ -145,25 +141,28 @@ def get_copilot_review(pr_number, after_id=None):
     if not output or output == "null":
         return None
 
-    review = json.loads(output)
-    if after_id and review.get("id", 0) <= after_id:
-        return None
-
-    return review
+    return json.loads(output)
 
 
-def is_copilot_review_complete(pr_number, after_id=None):
-    """Check if Copilot has submitted a new review.
+def is_copilot_review_complete(pr_number, after_ts=None):
+    """Check if Copilot has submitted a new or updated review.
 
     Args:
         pr_number: PR number.
-        after_id: If set, only returns True for reviews with id > after_id.
+        after_ts: If set, only returns True for reviews submitted after this
+                  ISO 8601 timestamp. This handles both new reviews (higher ID)
+                  and updated reviews (same ID but newer submitted_at).
 
     Returns:
-        True if a new Copilot review is present.
+        True if a new/updated Copilot review is present.
     """
-    review = get_copilot_review(pr_number, after_id=after_id)
-    return review is not None
+    review = get_copilot_review(pr_number)
+    if review is None:
+        return False
+    if after_ts is None:
+        return True
+    submitted = review.get("submitted_at", "")
+    return submitted > after_ts
 
 
 def get_issue(issue_number):
