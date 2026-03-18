@@ -299,6 +299,14 @@ class Orchestrator(BaseOrchestrator):
         """Run copilot agent with implement prompt."""
         branch = self.task["branch"]
 
+        # Snapshot review ID before the agent pushes (same pattern as _do_fix)
+        pr_number = self.task.get("pr_number")
+        if pr_number:
+            current_review = get_copilot_review(pr_number)
+            if current_review:
+                self._last_review_id = current_review.get("id", 0)
+                update_task(self.task_id, last_review_id=self._last_review_id)
+
         # Use existing-branch prompt if the branch already exists remotely
         if self.task.get("existing_branch"):
             prompt = implement_on_existing_branch_prompt(
@@ -382,12 +390,8 @@ class Orchestrator(BaseOrchestrator):
         """Request Copilot review on the PR."""
         pr_number = self.task["pr_number"]
 
-        # Snapshot the current latest review ID so we can detect NEW reviews
-        current_review = get_copilot_review(pr_number)
-        if current_review:
-            self._last_review_id = current_review.get("id", 0)
-            update_task(self.task_id, last_review_id=self._last_review_id)
-            logger.debug("[%s] Last review ID before request: %s", self.task_id, self._last_review_id)
+        # Review ID snapshot is now taken in _do_fix (before the agent pushes)
+        # to avoid the race where Copilot auto-reviews the push before we snapshot.
 
         try:
             request_copilot_review(pr_number)
@@ -541,6 +545,15 @@ class Orchestrator(BaseOrchestrator):
 
         # Record head SHA before fix
         self._pre_fix_sha = get_head_sha(self.task["branch"])
+
+        # Snapshot the current latest review ID BEFORE the agent pushes,
+        # so any review that arrives after the push (auto-triggered or
+        # explicitly requested) has a higher ID than the snapshot.
+        current_review = get_copilot_review(pr_number)
+        if current_review:
+            self._last_review_id = current_review.get("id", 0)
+            update_task(self.task_id, last_review_id=self._last_review_id)
+            logger.debug("[%s] Snapshot review ID before fix: %s", self.task_id, self._last_review_id)
 
         result = self._run_agent_with_retry("FIX", prompt, "fix-%d" % iteration)
         if result is None:
