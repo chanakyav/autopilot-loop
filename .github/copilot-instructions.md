@@ -58,7 +58,7 @@ When creating or updating issues, PRs, or comments via `gh` CLI, always add a fo
 
 ```
 ---
-🤖 *autopilot-loop*
+🤖 **autopilot-loop**
 ```
 
 This identifies automated contributions. Use this on:
