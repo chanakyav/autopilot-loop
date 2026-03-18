@@ -22,7 +22,9 @@ from autopilot_loop.github_api import (
     get_copilot_review,
     get_failed_checks,
     get_head_sha,
+    get_latest_copilot_review_thread_ts,
     get_unresolved_review_comments,
+    is_copilot_pending_reviewer,
     reply_to_comment,
     request_copilot_review,
     resolve_review_thread,
@@ -389,6 +391,7 @@ class Orchestrator(BaseOrchestrator):
         except Exception as e:
             logger.error("[%s] Failed to request review: %s", self.task_id, e)
             return "FAILED"
+        self._review_requested_at = time.time()
         return "WAIT_REVIEW"
 
     def _do_wait_review(self):
@@ -397,12 +400,21 @@ class Orchestrator(BaseOrchestrator):
         After RESOLVE_COMMENTS resolves all threads and REQUEST_REVIEW
         requests a fresh review, we poll for new unresolved comments.
         A minimum initial wait gives Copilot time to start reviewing.
+
+        Detection strategy (layered):
+        1. Unresolved Copilot comments found -> PARSE_REVIEW (fast path).
+        2. Copilot no longer a pending reviewer (removed itself after
+           completing the review) AND 0 unresolved comments -> clean
+           review detected -> PARSE_REVIEW (which sees 0 -> COMPLETE).
+        3. Timeout exceeded -> COMPLETE (manual review needed).
         """
         pr_number = self.task["pr_number"]
         poll_interval = self.config.get("review_poll_interval_seconds", 60)
         timeout = self.config.get("review_timeout_seconds", 3600)
         min_wait = min(poll_interval, 60)
         start_time = time.time()
+        # Fallback if resumed without going through _do_request_review
+        requested_at = getattr(self, "_review_requested_at", None) or start_time
 
         logger.info("[%s] Waiting %ds before first poll, then every %ds (timeout: %ds)...",
                     self.task_id, min_wait, poll_interval, timeout)
@@ -423,10 +435,45 @@ class Orchestrator(BaseOrchestrator):
                             self.task_id, len(comments))
                 return "PARSE_REVIEW"
 
-            review = get_copilot_review(pr_number)
-            if review and review.get("state") == "APPROVED":
-                logger.info("[%s] ✓ Copilot approved the PR", self.task_id)
-                return "COMPLETE"
+            # Check if Copilot finished reviewing (removed itself from
+            # requested reviewers).  Wrapped in try/except so API errors
+            # do not break the poll loop.
+            try:
+                still_pending = is_copilot_pending_reviewer(pr_number)
+            except Exception as exc:
+                logger.warning("[%s] Error checking pending reviewer: %s", self.task_id, exc)
+                still_pending = True  # assume still pending on error
+
+            if not still_pending:
+                # Copilot is done — secondary confirmation via thread timestamps.
+                try:
+                    latest_ts = get_latest_copilot_review_thread_ts(pr_number)
+                except Exception as exc:
+                    logger.warning("[%s] Error fetching thread timestamps: %s", self.task_id, exc)
+                    latest_ts = None
+
+                requested_at_iso = time.strftime(
+                    "%%Y-%%m-%%dT%%H:%%M:%%SZ", time.gmtime(requested_at)
+                )
+                if latest_ts and latest_ts > requested_at_iso:
+                    logger.info(
+                        "[%s] ✓ Copilot reviewed (latest thread %s, requested %s), "
+                        "0 unresolved comments — clean review",
+                        self.task_id, latest_ts, requested_at_iso,
+                    )
+                elif latest_ts:
+                    logger.info(
+                        "[%s] Copilot not pending but latest thread (%s) is before "
+                        "request (%s) — proceeding to parse",
+                        self.task_id, latest_ts, requested_at_iso,
+                    )
+                else:
+                    logger.info(
+                        "[%s] Copilot not pending, no review threads found — "
+                        "proceeding to parse",
+                        self.task_id,
+                    )
+                return "PARSE_REVIEW"
 
             logger.debug("[%s] No new comments yet, waiting %ds... (%.0f/%ds elapsed)",
                          self.task_id, poll_interval, elapsed, timeout)

@@ -13,8 +13,10 @@ from autopilot_loop.github_api import (
     get_copilot_review,
     get_failed_checks,
     get_issue,
+    get_latest_copilot_review_thread_ts,
     get_repo_nwo,
     get_unresolved_review_comments,
+    is_copilot_pending_reviewer,
     is_copilot_review_complete,
     reply_to_comment,
     request_copilot_review,
@@ -238,6 +240,147 @@ class TestGetUnresolvedReviewComments:
                 "not valid json",
             ]
             assert get_unresolved_review_comments(42) == []
+
+
+class TestIsCopilotPendingReviewer:
+    def test_copilot_pending(self):
+        response = {"users": [{"login": "copilot-pull-request-reviewer[bot]"}], "teams": []}
+        with patch("autopilot_loop.github_api._run_gh") as mock_gh:
+            mock_gh.side_effect = [
+                "octocat/hello-world",
+                json.dumps(response),
+            ]
+            assert is_copilot_pending_reviewer(42) is True
+
+    def test_copilot_not_pending(self):
+        response = {"users": [{"login": "some-human"}], "teams": []}
+        with patch("autopilot_loop.github_api._run_gh") as mock_gh:
+            mock_gh.side_effect = [
+                "octocat/hello-world",
+                json.dumps(response),
+            ]
+            assert is_copilot_pending_reviewer(42) is False
+
+    def test_empty_users(self):
+        response = {"users": [], "teams": []}
+        with patch("autopilot_loop.github_api._run_gh") as mock_gh:
+            mock_gh.side_effect = [
+                "octocat/hello-world",
+                json.dumps(response),
+            ]
+            assert is_copilot_pending_reviewer(42) is False
+
+    def test_empty_response(self):
+        with patch("autopilot_loop.github_api._run_gh") as mock_gh:
+            mock_gh.side_effect = [
+                "octocat/hello-world",
+                "",
+            ]
+            assert is_copilot_pending_reviewer(42) is False
+
+    def test_graphql_login_variant(self):
+        """The GraphQL login variant (without [bot] suffix) is also recognised."""
+        response = {"users": [{"login": "copilot-pull-request-reviewer"}], "teams": []}
+        with patch("autopilot_loop.github_api._run_gh") as mock_gh:
+            mock_gh.side_effect = [
+                "octocat/hello-world",
+                json.dumps(response),
+            ]
+            assert is_copilot_pending_reviewer(42) is True
+
+    def test_malformed_json_returns_false(self):
+        with patch("autopilot_loop.github_api._run_gh") as mock_gh:
+            mock_gh.side_effect = [
+                "octocat/hello-world",
+                "not valid json",
+            ]
+            assert is_copilot_pending_reviewer(42) is False
+
+
+class TestGetLatestCopilotReviewThreadTs:
+    def _graphql_response(self, threads):
+        return {
+            "data": {
+                "repository": {
+                    "pullRequest": {
+                        "reviewThreads": {"nodes": threads}
+                    }
+                }
+            }
+        }
+
+    def test_returns_latest_timestamp(self):
+        threads = [
+            {"comments": {"nodes": [
+                {"author": {"login": "copilot-pull-request-reviewer"},
+                 "createdAt": "2026-03-18T15:29:42Z"}
+            ]}},
+            {"comments": {"nodes": [
+                {"author": {"login": "copilot-pull-request-reviewer"},
+                 "createdAt": "2026-03-18T17:50:42Z"}
+            ]}},
+            {"comments": {"nodes": [
+                {"author": {"login": "copilot-pull-request-reviewer"},
+                 "createdAt": "2026-03-18T16:16:19Z"}
+            ]}},
+        ]
+        resp = self._graphql_response(threads)
+        with patch("autopilot_loop.github_api._run_gh") as mock_gh:
+            mock_gh.side_effect = [
+                "octocat/hello-world",
+                json.dumps(resp),
+            ]
+            assert get_latest_copilot_review_thread_ts(42) == "2026-03-18T17:50:42Z"
+
+    def test_returns_none_when_no_copilot_threads(self):
+        threads = [
+            {"comments": {"nodes": [
+                {"author": {"login": "some-human"}, "createdAt": "2026-03-18T10:00:00Z"}
+            ]}},
+        ]
+        resp = self._graphql_response(threads)
+        with patch("autopilot_loop.github_api._run_gh") as mock_gh:
+            mock_gh.side_effect = [
+                "octocat/hello-world",
+                json.dumps(resp),
+            ]
+            assert get_latest_copilot_review_thread_ts(42) is None
+
+    def test_returns_none_on_empty_response(self):
+        with patch("autopilot_loop.github_api._run_gh") as mock_gh:
+            mock_gh.side_effect = [
+                "octocat/hello-world",
+                "",
+            ]
+            assert get_latest_copilot_review_thread_ts(42) is None
+
+    def test_ignores_non_copilot_threads(self):
+        threads = [
+            {"comments": {"nodes": [
+                {"author": {"login": "copilot-pull-request-reviewer"},
+                 "createdAt": "2026-03-18T14:00:00Z"}
+            ]}},
+            {"comments": {"nodes": [
+                {"author": {"login": "human-dev"},
+                 "createdAt": "2026-03-18T18:00:00Z"}
+            ]}},
+        ]
+        resp = self._graphql_response(threads)
+        with patch("autopilot_loop.github_api._run_gh") as mock_gh:
+            mock_gh.side_effect = [
+                "octocat/hello-world",
+                json.dumps(resp),
+            ]
+            # Should return 14:00, not 18:00 (human thread ignored)
+            assert get_latest_copilot_review_thread_ts(42) == "2026-03-18T14:00:00Z"
+
+    def test_malformed_json_returns_none(self):
+        with patch("autopilot_loop.github_api._run_gh") as mock_gh:
+            mock_gh.side_effect = [
+                "octocat/hello-world",
+                "not valid json",
+            ]
+            assert get_latest_copilot_review_thread_ts(42) is None
 
 
 class TestGetIssue:
