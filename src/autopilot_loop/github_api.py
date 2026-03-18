@@ -20,8 +20,10 @@ __all__ = [
     "get_failed_checks",
     "get_head_sha",
     "get_issue",
+    "get_latest_copilot_review_thread_ts",
     "get_repo_nwo",
     "get_unresolved_review_comments",
+    "is_copilot_pending_reviewer",
     "is_copilot_review_complete",
     "reply_to_comment",
     "request_copilot_review",
@@ -206,6 +208,14 @@ def resolve_review_thread(thread_node_id):
     logger.debug("Resolved thread %s", thread_node_id)
 
 
+# Copilot logins as seen across REST and GraphQL APIs.
+_COPILOT_LOGINS = frozenset((
+    "Copilot",
+    "copilot-pull-request-reviewer[bot]",
+    "copilot-pull-request-reviewer",
+))
+
+
 def get_unresolved_review_comments(pr_number):
     """Get unresolved Copilot review comments via GraphQL.
 
@@ -284,7 +294,7 @@ def get_unresolved_review_comments(pr_number):
         first = thread_comments[0]
         author = first.get("author", {}).get("login", "")
         # Only include Copilot comments (login varies by API: REST vs GraphQL)
-        if author not in ("Copilot", "copilot-pull-request-reviewer[bot]", "copilot-pull-request-reviewer"):
+        if author not in _COPILOT_LOGINS:
             continue
         comments.append({
             "id": first.get("databaseId"),
@@ -296,6 +306,111 @@ def get_unresolved_review_comments(pr_number):
         })
 
     return comments
+
+
+def is_copilot_pending_reviewer(pr_number):
+    """Check whether Copilot is still a pending (requested) reviewer.
+
+    After Copilot finishes reviewing a PR it removes itself from the
+    requested-reviewers list.  Returning ``False`` therefore means
+    Copilot has completed its review.
+
+    Returns:
+        True if Copilot is still pending, False otherwise.
+    """
+    nwo = get_repo_nwo()
+    output = _run_gh([
+        "api", "repos/%s/pulls/%d/requested_reviewers" % (nwo, pr_number),
+    ], check=False)
+    if not output:
+        return False
+    try:
+        data = json.loads(output)
+    except ValueError:
+        logger.warning("Failed to parse requested_reviewers response")
+        return False
+    for user in data.get("users", []):
+        if user.get("login", "") in _COPILOT_LOGINS:
+            return True
+    return False
+
+
+def get_latest_copilot_review_thread_ts(pr_number):
+    """Return the creation timestamp of the most recent Copilot review thread.
+
+    Queries *all* review threads (resolved and unresolved) and returns
+    the latest ``createdAt`` value for a thread whose first comment was
+    authored by Copilot.  This lets callers check whether Copilot has
+    actually reviewed since a given point in time.
+
+    Returns:
+        ISO 8601 timestamp string, or None if no Copilot threads exist.
+    """
+    nwo = get_repo_nwo()
+    owner, repo = nwo.split("/", 1)
+    query = """
+    query($owner: String!, $name: String!, $number: Int!) {
+      repository(owner: $owner, name: $name) {
+        pullRequest(number: $number) {
+          reviewThreads(first: 100) {
+            nodes {
+              comments(first: 1) {
+                nodes {
+                  author { login }
+                  createdAt
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+    """
+
+    output = _run_gh([
+        "api", "graphql",
+        "-f", "query=%s" % query.strip(),
+        "-F", "owner=%s" % owner,
+        "-F", "name=%s" % repo,
+        "-F", "number=%d" % pr_number,
+    ], check=False)
+    if not output:
+        return None
+
+    try:
+        data = json.loads(output)
+    except ValueError:
+        logger.warning("Failed to parse GraphQL response in get_latest_copilot_review_thread_ts")
+        return None
+
+    if "errors" in data:
+        msgs = [e.get("message", str(e)) for e in data["errors"]]
+        logger.warning("GraphQL errors in get_latest_copilot_review_thread_ts: %s", "; ".join(msgs))
+        if not data.get("data"):
+            return None
+
+    threads = (
+        data.get("data", {})
+        .get("repository", {})
+        .get("pullRequest", {})
+        .get("reviewThreads", {})
+        .get("nodes", [])
+    )
+
+    latest = None
+    for thread in threads:
+        comments = thread.get("comments", {}).get("nodes", [])
+        if not comments:
+            continue
+        first = comments[0]
+        author = first.get("author", {}).get("login", "")
+        if author not in _COPILOT_LOGINS:
+            continue
+        created = first.get("createdAt", "")
+        if created and (latest is None or created > latest):
+            latest = created
+
+    return latest
 
 
 # --- CI check functions ---

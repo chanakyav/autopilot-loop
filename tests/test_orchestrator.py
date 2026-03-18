@@ -112,17 +112,101 @@ class TestOrchestratorWaitReview:
         assert orch._do_wait_review() == "PARSE_REVIEW"
 
     @patch("autopilot_loop.orchestrator.time.sleep")
-    @patch("autopilot_loop.orchestrator.get_copilot_review")
+    @patch("autopilot_loop.orchestrator.is_copilot_pending_reviewer")
     @patch("autopilot_loop.orchestrator.get_unresolved_review_comments")
-    def test_review_timeout(self, mock_comments, mock_review, mock_sleep, config):
+    def test_review_timeout(self, mock_comments, mock_pending, mock_sleep, config):
         mock_comments.return_value = []
-        mock_review.return_value = {"id": 100, "state": "COMMENTED"}
+        mock_pending.return_value = True  # still pending, never finishes
         config["review_timeout_seconds"] = 0  # Immediate timeout
         task_id = _create_test_task()
         persistence.update_task(task_id, pr_number=42)
         orch = Orchestrator(task_id, config)
         orch.task = persistence.get_task(task_id)
         assert orch._do_wait_review() == "COMPLETE"
+
+    @patch("autopilot_loop.orchestrator.get_latest_copilot_review_thread_ts")
+    @patch("autopilot_loop.orchestrator.is_copilot_pending_reviewer")
+    @patch("autopilot_loop.orchestrator.get_unresolved_review_comments")
+    def test_clean_review_copilot_not_pending(
+        self, mock_comments, mock_pending, mock_thread_ts, config,
+    ):
+        """0 unresolved + Copilot not pending + new thread -> PARSE_REVIEW."""
+        mock_comments.return_value = []
+        mock_pending.return_value = False
+        mock_thread_ts.return_value = "2099-01-01T00:00:00Z"
+        task_id = _create_test_task()
+        persistence.update_task(task_id, pr_number=42)
+        orch = Orchestrator(task_id, config)
+        orch.task = persistence.get_task(task_id)
+        assert orch._do_wait_review() == "PARSE_REVIEW"
+
+    @patch("autopilot_loop.orchestrator.time.sleep")
+    @patch("autopilot_loop.orchestrator.is_copilot_pending_reviewer")
+    @patch("autopilot_loop.orchestrator.get_unresolved_review_comments")
+    def test_copilot_still_pending_keeps_polling(
+        self, mock_comments, mock_pending, mock_sleep, config,
+    ):
+        """0 unresolved + still pending -> keeps polling until timeout."""
+        mock_comments.return_value = []
+        mock_pending.return_value = True
+        config["review_timeout_seconds"] = 0
+        task_id = _create_test_task()
+        persistence.update_task(task_id, pr_number=42)
+        orch = Orchestrator(task_id, config)
+        orch.task = persistence.get_task(task_id)
+        # With timeout=0 it will hit timeout on next iteration
+        assert orch._do_wait_review() == "COMPLETE"
+
+    @patch("autopilot_loop.orchestrator.get_latest_copilot_review_thread_ts")
+    @patch("autopilot_loop.orchestrator.is_copilot_pending_reviewer")
+    @patch("autopilot_loop.orchestrator.get_unresolved_review_comments")
+    def test_copilot_not_pending_no_threads(
+        self, mock_comments, mock_pending, mock_thread_ts, config,
+    ):
+        """0 unresolved + not pending + no threads -> still PARSE_REVIEW."""
+        mock_comments.return_value = []
+        mock_pending.return_value = False
+        mock_thread_ts.return_value = None
+        task_id = _create_test_task()
+        persistence.update_task(task_id, pr_number=42)
+        orch = Orchestrator(task_id, config)
+        orch.task = persistence.get_task(task_id)
+        assert orch._do_wait_review() == "PARSE_REVIEW"
+
+    @patch("autopilot_loop.orchestrator.time.sleep")
+    @patch("autopilot_loop.orchestrator.is_copilot_pending_reviewer")
+    @patch("autopilot_loop.orchestrator.get_unresolved_review_comments")
+    def test_pending_check_error_continues_polling(
+        self, mock_comments, mock_pending, mock_sleep, config,
+    ):
+        """API error in is_copilot_pending_reviewer -> falls back to polling."""
+        mock_comments.return_value = []
+        mock_pending.side_effect = Exception("API error")
+        config["review_timeout_seconds"] = 0
+        task_id = _create_test_task()
+        persistence.update_task(task_id, pr_number=42)
+        orch = Orchestrator(task_id, config)
+        orch.task = persistence.get_task(task_id)
+        # Error treated as "still pending" -> will hit timeout
+        assert orch._do_wait_review() == "COMPLETE"
+
+    @patch("autopilot_loop.orchestrator.get_latest_copilot_review_thread_ts")
+    @patch("autopilot_loop.orchestrator.is_copilot_pending_reviewer")
+    @patch("autopilot_loop.orchestrator.get_unresolved_review_comments")
+    def test_wait_review_without_request_timestamp(
+        self, mock_comments, mock_pending, mock_thread_ts, config,
+    ):
+        """Resume at WAIT_REVIEW without _review_requested_at set."""
+        mock_comments.return_value = []
+        mock_pending.return_value = False
+        mock_thread_ts.return_value = "2099-01-01T00:00:00Z"
+        task_id = _create_test_task()
+        persistence.update_task(task_id, pr_number=42)
+        orch = Orchestrator(task_id, config)
+        orch.task = persistence.get_task(task_id)
+        # _review_requested_at is NOT set — should use start_time fallback
+        assert not hasattr(orch, "_review_requested_at")
+        assert orch._do_wait_review() == "PARSE_REVIEW"
 
 
 class TestOrchestratorParseReview:
@@ -185,21 +269,26 @@ class TestOrchestratorFullLoop:
     @patch("autopilot_loop.orchestrator.verify_new_commits")
     @patch("autopilot_loop.orchestrator.get_head_sha")
     @patch("autopilot_loop.orchestrator.request_copilot_review")
+    @patch("autopilot_loop.orchestrator.get_latest_copilot_review_thread_ts")
+    @patch("autopilot_loop.orchestrator.is_copilot_pending_reviewer")
     @patch("autopilot_loop.orchestrator.get_unresolved_review_comments")
     @patch("autopilot_loop.orchestrator.get_copilot_review")
     @patch("autopilot_loop.orchestrator.find_pr_for_branch")
     @patch("autopilot_loop.orchestrator.run_agent")
     def test_clean_pr_no_comments(
         self, mock_run, mock_find_pr, mock_review, mock_unresolved,
+        mock_pending, mock_thread_ts,
         mock_request, mock_sha, mock_verify,
         mock_reply, mock_resolve, mock_timeout,
         config,
     ):
-        """Full loop: implement → verify PR → request review → wait → parse → COMPLETE."""
+        """Full loop: implement -> verify PR -> request review -> wait -> parse -> COMPLETE."""
         mock_run.return_value = _mock_agent_result()
         mock_find_pr.return_value = 42
         mock_review.return_value = {"id": 100, "body": "LGTM", "state": "APPROVED"}
         mock_unresolved.return_value = []
+        mock_pending.return_value = False
+        mock_thread_ts.return_value = "2099-01-01T00:00:00Z"
 
         task_id = _create_test_task()
         orch = Orchestrator(task_id, config)
@@ -212,17 +301,20 @@ class TestOrchestratorFullLoop:
     @patch("autopilot_loop.orchestrator.verify_new_commits")
     @patch("autopilot_loop.orchestrator.get_head_sha")
     @patch("autopilot_loop.orchestrator.request_copilot_review")
+    @patch("autopilot_loop.orchestrator.get_latest_copilot_review_thread_ts")
+    @patch("autopilot_loop.orchestrator.is_copilot_pending_reviewer")
     @patch("autopilot_loop.orchestrator.get_unresolved_review_comments")
     @patch("autopilot_loop.orchestrator.get_copilot_review")
     @patch("autopilot_loop.orchestrator.find_pr_for_branch")
     @patch("autopilot_loop.orchestrator.run_agent")
     def test_one_fix_iteration(
         self, mock_run, mock_find_pr, mock_review, mock_unresolved,
+        mock_pending, mock_thread_ts,
         mock_request, mock_sha, mock_verify,
         mock_reply, mock_resolve, mock_timeout,
         config,
     ):
-        """Full loop with one fix iteration: comments → fix → resolve → re-review → clean."""
+        """Full loop with one fix iteration: comments -> fix -> resolve -> re-review -> clean."""
         mock_run.return_value = _mock_agent_result()
         mock_find_pr.return_value = 42
         mock_sha.return_value = "sha1"
@@ -237,9 +329,11 @@ class TestOrchestratorFullLoop:
             [_comment],  # PARSE_REVIEW
             [_comment],  # _do_fix
             [_comment],  # RESOLVE_COMMENTS
-            [],          # WAIT_REVIEW 2nd cycle: clean
+            [],          # WAIT_REVIEW 2nd cycle: clean (then pending check fires)
             [],          # PARSE_REVIEW 2nd: confirms clean
         ]
+        mock_pending.return_value = False
+        mock_thread_ts.return_value = "2099-01-01T00:00:00Z"
 
         task_id = _create_test_task()
         orch = Orchestrator(task_id, config)
