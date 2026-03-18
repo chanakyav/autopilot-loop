@@ -603,7 +603,7 @@ class Orchestrator(BaseOrchestrator):
             message = summary.get("message", "")
 
             # Build reply
-            PREFIX = "\U0001f916 [autopilot-loop](https://github.com/chanakyav/autopilot-loop)"# Robot emoji for clarity in PR comments
+            PREFIX = "\U0001f916 [autopilot-loop](https://github.com/chanakyav/autopilot-loop)"
             if status == "skipped":
                 reply_body = (
                     "%s: Skipped \u2014 %s" % (PREFIX, message)
