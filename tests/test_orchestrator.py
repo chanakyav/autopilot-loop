@@ -703,6 +703,7 @@ class TestIdleTimeoutEnabled:
     def test_idle_timeout_called_when_enabled(self, mock_timeout, config, monkeypatch):
         """Default config (enabled=True) should call set_idle_timeout in a Codespace."""
         monkeypatch.setenv("CODESPACE_NAME", "test-codespace")
+        monkeypatch.setattr("autopilot_loop.orchestrator.get_idle_timeout", lambda: 30)
         task_id = _create_test_task()
         orch = Orchestrator(task_id, config)
         orch._do_init()
@@ -726,6 +727,28 @@ class TestIdleTimeoutEnabled:
         orch = Orchestrator(task_id, config)
         orch._do_init()
         mock_timeout.assert_not_called()
+
+    @patch("autopilot_loop.orchestrator.set_idle_timeout")
+    @patch("autopilot_loop.orchestrator.get_idle_timeout", return_value=30)
+    def test_original_timeout_saved_on_init(self, mock_get, mock_set, config, monkeypatch):
+        """Original idle timeout is saved to the task record during init."""
+        monkeypatch.setenv("CODESPACE_NAME", "test-codespace")
+        task_id = _create_test_task()
+        orch = Orchestrator(task_id, config)
+        orch._do_init()
+        task = persistence.get_task(task_id)
+        assert task["original_idle_timeout"] == 30
+
+    @patch("autopilot_loop.orchestrator.set_idle_timeout")
+    @patch("autopilot_loop.orchestrator.get_idle_timeout", return_value=None)
+    def test_original_timeout_not_saved_when_none(self, mock_get, mock_set, config, monkeypatch):
+        """When get_idle_timeout returns None, original_idle_timeout is not set."""
+        monkeypatch.setenv("CODESPACE_NAME", "test-codespace")
+        task_id = _create_test_task()
+        orch = Orchestrator(task_id, config)
+        orch._do_init()
+        task = persistence.get_task(task_id)
+        assert task["original_idle_timeout"] is None
 
 
 class TestFixContextCarryForward:
@@ -873,3 +896,43 @@ class TestWorkspaceDirs:
         orch = Orchestrator(task_id, config)
         flags = orch._get_extra_flags()
         assert flags is None
+
+
+class TestIdleTimeoutRestore:
+    @patch("autopilot_loop.orchestrator.set_idle_timeout")
+    def test_restore_called_when_original_saved(self, mock_set, config, monkeypatch):
+        """Idle timeout is restored at terminal state when original was saved."""
+        monkeypatch.setenv("CODESPACE_NAME", "test-codespace")
+        task_id = _create_test_task()
+        persistence.update_task(task_id, original_idle_timeout=30)
+
+        orch = Orchestrator(task_id, config)
+        orch.task = persistence.get_task(task_id)
+        orch._restore_idle_timeout()
+
+        mock_set.assert_called_once_with(30)
+
+    @patch("autopilot_loop.orchestrator.set_idle_timeout")
+    def test_restore_not_called_when_no_original(self, mock_set, config, monkeypatch):
+        """Idle timeout is not restored when no original was saved."""
+        monkeypatch.setenv("CODESPACE_NAME", "test-codespace")
+        task_id = _create_test_task()
+
+        orch = Orchestrator(task_id, config)
+        orch.task = persistence.get_task(task_id)
+        orch._restore_idle_timeout()
+
+        mock_set.assert_not_called()
+
+    @patch("autopilot_loop.orchestrator.set_idle_timeout")
+    def test_restore_not_called_outside_codespace(self, mock_set, config, monkeypatch):
+        """Idle timeout is not restored outside a codespace."""
+        monkeypatch.delenv("CODESPACE_NAME", raising=False)
+        task_id = _create_test_task()
+        persistence.update_task(task_id, original_idle_timeout=30)
+
+        orch = Orchestrator(task_id, config)
+        orch.task = persistence.get_task(task_id)
+        orch._restore_idle_timeout()
+
+        mock_set.assert_not_called()

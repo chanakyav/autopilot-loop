@@ -217,9 +217,24 @@ def test_migration_from_pre_versioned_db(tmp_path, monkeypatch):
     assert task["ci_check_names"] is None
     assert task["pre_stop_state"] is None
     assert task["existing_branch"] == 0
+    assert task["original_idle_timeout"] is None
 
     # New columns should be usable
     persistence.update_task("old1", task_mode="ci", ci_check_names='["check-a"]')
     task = persistence.get_task("old1")
     assert task["task_mode"] == "ci"
     assert task["ci_check_names"] == '["check-a"]'
+
+
+def test_original_idle_timeout_persists(tmp_path, monkeypatch):
+    """original_idle_timeout column can be written and read back."""
+    monkeypatch.setattr(persistence, "DB_DIR", str(tmp_path))
+    monkeypatch.setattr(persistence, "DB_PATH", str(tmp_path / "state.db"))
+
+    persistence.create_task("t1", "prompt")
+    task = persistence.get_task("t1")
+    assert task["original_idle_timeout"] is None
+
+    persistence.update_task("t1", original_idle_timeout=30)
+    task = persistence.get_task("t1")
+    assert task["original_idle_timeout"] == 30

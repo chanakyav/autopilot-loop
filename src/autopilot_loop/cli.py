@@ -79,6 +79,18 @@ def _detect_autopilot_branch():
     return None
 
 
+def _tmux_session_exists(tmux_session):
+    """Check if a tmux session exists."""
+    try:
+        result = subprocess.run(
+            ["tmux", "has-session", "-t", tmux_session],
+            capture_output=True,
+        )
+        return result.returncode == 0
+    except FileNotFoundError:
+        return False
+
+
 def _launch_in_tmux(task_id, mode="review", branch=None, pr_number=None):
     """Launch a task in tmux with standardized output.
 
@@ -288,6 +300,10 @@ def cmd_resume(args):
 
     _launch_in_tmux(task_id, mode="resume", branch=branch, pr_number=args.pr)
 
+    if not args.no_follow and sys.stdout.isatty():
+        from autopilot_loop.dashboard import logs_tui
+        logs_tui(task_id)
+
 
 def cmd_status(args):
     """Show status of all autopilot tasks."""
@@ -323,6 +339,26 @@ def cmd_attach(args):
         sys.exit(1)
 
     tmux_session = "autopilot-%s" % task_id
+
+    # If the task is in a terminal state and the session is gone, show guidance
+    if task["state"] in TERMINAL_STATES and not _tmux_session_exists(tmux_session):
+        state = task["state"]
+        if state == "STOPPED":
+            pre = task.get("pre_stop_state") or "unknown"
+            print("Task %s is STOPPED (was in %s)." % (task_id, pre))
+            print("  autopilot restart %s   — restart task" % task_id)
+        elif state == "COMPLETE":
+            pr = task.get("pr_number")
+            if pr:
+                print("Task %s is COMPLETE (PR #%d)." % (task_id, pr))
+            else:
+                print("Task %s is COMPLETE." % task_id)
+        elif state == "FAILED":
+            print("Task %s is FAILED." % task_id)
+            print("  autopilot restart %s   — restart task" % task_id)
+        print("  autopilot logs --session %s   — view logs" % task_id)
+        return
+
     try:
         subprocess.run(["tmux", "switch-client", "-t", tmux_session], check=True)
     except subprocess.CalledProcessError:
@@ -346,7 +382,9 @@ def cmd_next(args):
         for t in tasks:
             if t["state"] == state:
                 tmux_session = "autopilot-%s" % t["id"]
-                print("✓ Switching to task %s (state: %s)" % (t["id"], state))
+                if not _tmux_session_exists(tmux_session):
+                    continue
+                print("\u2713 Switching to task %s (state: %s)" % (t["id"], state))
                 try:
                     subprocess.run(["tmux", "switch-client", "-t", tmux_session], check=True)
                     return
@@ -522,6 +560,10 @@ def cmd_fix_ci(args):
 
     _launch_in_tmux(task_id, mode="ci", branch=branch, pr_number=args.pr)
 
+    if not args.no_follow and sys.stdout.isatty():
+        from autopilot_loop.dashboard import logs_tui
+        logs_tui(task_id)
+
 
 def cmd_stop(args):
     """Stop a running task."""
@@ -544,7 +586,11 @@ def cmd_stop(args):
     if task and task["state"] not in TERMINAL_STATES:
         from autopilot_loop.persistence import update_task
         update_task(task_id, pre_stop_state=task["state"], state="STOPPED")
-        print("✓ Task %s marked as STOPPED" % task_id)
+        print("\u2713 Task %s marked as STOPPED" % task_id)
+
+    print()
+    print("  autopilot restart %s   — restart task" % task_id)
+    print("  autopilot logs --session %s   — view logs" % task_id)
 
 
 def cmd_restart(args):
@@ -583,6 +629,10 @@ def cmd_restart(args):
     mode = "ci" if task.get("task_mode") == "ci" else "review"
     _launch_in_tmux(task_id, mode="restart (%s)" % mode, branch=task.get("branch"),
                     pr_number=task.get("pr_number"))
+
+    if not args.no_follow and sys.stdout.isatty():
+        from autopilot_loop.dashboard import logs_tui
+        logs_tui(task_id)
 
 
 def cmd_doctor(args):
@@ -700,6 +750,8 @@ def main():
     # resume
     p_resume = subparsers.add_parser("resume", help="Resume from an existing PR")
     p_resume.add_argument("--pr", type=int, required=True, help="PR number to resume")
+    p_resume.add_argument("--no-follow", action="store_true",
+                          help="Don't auto-open log viewer after resume")
 
     # status
     p_status = subparsers.add_parser("status", help="Show task status")
@@ -721,6 +773,8 @@ def main():
     # restart
     p_restart = subparsers.add_parser("restart", help="Restart a stopped task")
     p_restart.add_argument("task_id", type=str, help="Task ID to restart")
+    p_restart.add_argument("--no-follow", action="store_true",
+                           help="Don't auto-open log viewer after restart")
 
     # fix-ci
     p_fixci = subparsers.add_parser("fix-ci", help="Fix CI failures on an existing PR")
@@ -730,6 +784,8 @@ def main():
                               "(e.g. 'build' matches 'build-ubuntu')")
     p_fixci.add_argument("--max-iters", type=int, help="Max fix iterations")
     p_fixci.add_argument("--model", type=str, help="Model override")
+    p_fixci.add_argument("--no-follow", action="store_true",
+                         help="Don't auto-open log viewer after fix-ci")
 
     # attach
     p_attach = subparsers.add_parser("attach", help="Attach to a task's tmux session")
