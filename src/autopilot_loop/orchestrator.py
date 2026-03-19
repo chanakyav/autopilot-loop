@@ -14,7 +14,7 @@ import os
 import time
 
 from autopilot_loop.agent import run_agent
-from autopilot_loop.codespace import set_idle_timeout
+from autopilot_loop.codespace import get_idle_timeout, set_idle_timeout
 from autopilot_loop.github_api import (
     find_pr_for_branch,
     get_check_annotations,
@@ -103,7 +103,20 @@ class BaseOrchestrator:
             self.task = get_task(self.task_id)
 
         logger.info("[%s] %s", self.task_id, state)
+        self._restore_idle_timeout()
         return {"state": state, "task": self.task}
+
+    def _restore_idle_timeout(self):
+        """Restore the original codespace idle timeout if one was saved."""
+        original = self.task.get("original_idle_timeout")
+        if not original or not os.environ.get("CODESPACE_NAME"):
+            return
+        try:
+            set_idle_timeout(original)
+            logger.info("[%s] Restored codespace idle timeout to %d minutes",
+                        self.task_id, original)
+        except Exception as e:
+            logger.warning("[%s] Could not restore idle timeout: %s", self.task_id, e)
 
     def _transition(self, state):
         """Execute the current state and return the next state."""
@@ -124,6 +137,9 @@ class BaseOrchestrator:
             logger.info("[%s] Idle timeout extension disabled by config", self.task_id)
         else:
             try:
+                original = get_idle_timeout()
+                if original is not None:
+                    update_task(self.task_id, original_idle_timeout=original)
                 set_idle_timeout(self.config.get("idle_timeout_minutes", 120))
                 logger.info("[%s] \u2713 Codespace idle timeout set to %d minutes",
                             self.task_id, self.config.get("idle_timeout_minutes", 120))
