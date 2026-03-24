@@ -8,14 +8,14 @@ import pytest
 
 from autopilot_loop import persistence
 from autopilot_loop.cli import (
+    _add_to_git_exclude,
     _check_branch_lock,
+    _parse_issue_arg,
     _validate_task_id,
-    cmd_attach,
     cmd_doctor,
     cmd_fix_ci,
-    cmd_restart,
     cmd_resume,
-    cmd_stop,
+    cmd_start,
 )
 
 
@@ -235,6 +235,7 @@ class TestCmdStartFollow:
         defaults = {
             "prompt": "test prompt",
             "issue": None,
+            "file": None,
             "plan": False,
             "model": None,
             "max_iters": None,
@@ -257,6 +258,7 @@ class TestCmdStartFollow:
         monkeypatch.setattr("autopilot_loop.cli._detect_autopilot_branch", lambda: None)
         monkeypatch.setattr("autopilot_loop.cli._check_branch_lock", lambda b: None)
         monkeypatch.setattr("autopilot_loop.cli._launch_in_tmux", lambda *a, **kw: None)
+        monkeypatch.setattr("autopilot_loop.cli._add_to_git_exclude", lambda f: None)
 
     def test_follow_calls_logs_tui(self, monkeypatch):
         """When --no-follow is absent and stdout is a TTY, logs_tui is called."""
@@ -386,7 +388,7 @@ class TestCmdResumeRepoValidation:
 
         monkeypatch.setattr(subprocess, "run", fake_run)
 
-        args = SimpleNamespace(pr=42, no_follow=True)
+        args = SimpleNamespace(pr=42)
         # Should not raise
         cmd_resume(args)
 
@@ -424,268 +426,206 @@ class TestCmdResumeRepoValidation:
         assert "other-owner/other-repo" in captured.err
 
 
-class TestCmdAttachTerminalStates:
-    """Test that cmd_attach shows helpful messages for terminal-state tasks."""
+class TestParseIssueArg:
+    """Tests for _parse_issue_arg: plain numbers and full URLs."""
 
-    def test_stopped_task_no_session_shows_guidance(self, monkeypatch, capsys):
-        """STOPPED task with no tmux session shows restart/logs guidance."""
-        task_id = "abcd1234"
-        persistence.create_task(task_id, "test")
-        persistence.update_task(task_id, state="STOPPED", pre_stop_state="WAIT_REVIEW")
-        monkeypatch.setattr("autopilot_loop.cli._tmux_session_exists", lambda s: False)
+    def test_plain_number(self):
+        num, repo = _parse_issue_arg("123")
+        assert num == 123
+        assert repo is None
 
-        cmd_attach(SimpleNamespace(task_id=task_id))
+    def test_full_url(self):
+        num, repo = _parse_issue_arg("https://github.com/org/design-docs/issues/45")
+        assert num == 45
+        assert repo == "org/design-docs"
 
-        captured = capsys.readouterr()
-        assert "STOPPED" in captured.out
-        assert "WAIT_REVIEW" in captured.out
-        assert "restart" in captured.out
-        assert "logs" in captured.out
+    def test_https_url(self):
+        num, repo = _parse_issue_arg("https://github.com/owner/repo/issues/1")
+        assert num == 1
+        assert repo == "owner/repo"
 
-    def test_complete_task_no_session_shows_pr(self, monkeypatch, capsys):
-        """COMPLETE task shows PR number and logs guidance."""
-        task_id = "abcd1234"
-        persistence.create_task(task_id, "test")
-        persistence.update_task(task_id, state="COMPLETE", pr_number=42)
-        monkeypatch.setattr("autopilot_loop.cli._tmux_session_exists", lambda s: False)
+    def test_invalid_string_exits(self):
+        with pytest.raises(SystemExit):
+            _parse_issue_arg("not-a-number-or-url")
 
-        cmd_attach(SimpleNamespace(task_id=task_id))
+    def test_invalid_url_wrong_path_exits(self):
+        with pytest.raises(SystemExit):
+            _parse_issue_arg("https://github.com/owner/repo/pull/123")
 
-        captured = capsys.readouterr()
-        assert "COMPLETE" in captured.out
-        assert "PR #42" in captured.out
-        assert "logs" in captured.out
-
-    def test_failed_task_no_session_shows_guidance(self, monkeypatch, capsys):
-        """FAILED task shows restart and logs guidance."""
-        task_id = "abcd1234"
-        persistence.create_task(task_id, "test")
-        persistence.update_task(task_id, state="FAILED")
-        monkeypatch.setattr("autopilot_loop.cli._tmux_session_exists", lambda s: False)
-
-        cmd_attach(SimpleNamespace(task_id=task_id))
-
-        captured = capsys.readouterr()
-        assert "FAILED" in captured.out
-        assert "restart" in captured.out
-        assert "logs" in captured.out
-
-    def test_terminal_task_with_session_still_attaches(self, monkeypatch):
-        """COMPLETE task with live tmux session still attempts attach."""
-        task_id = "abcd1234"
-        persistence.create_task(task_id, "test")
-        persistence.update_task(task_id, state="COMPLETE")
-        monkeypatch.setattr("autopilot_loop.cli._tmux_session_exists", lambda s: True)
-
-        attach_calls = []
-        monkeypatch.setattr(
-            subprocess, "run",
-            lambda cmd, **kw: attach_calls.append(cmd) or subprocess.CompletedProcess(
-                args=cmd, returncode=0),
-        )
-
-        cmd_attach(SimpleNamespace(task_id=task_id))
-        assert any("switch-client" in str(c) for c in attach_calls)
-
-    def test_running_task_attaches_normally(self, monkeypatch):
-        """Non-terminal task proceeds to tmux attach."""
-        task_id = "abcd1234"
-        persistence.create_task(task_id, "test")
-        persistence.update_task(task_id, state="IMPLEMENT")
-
-        attach_calls = []
-        monkeypatch.setattr(
-            subprocess, "run",
-            lambda cmd, **kw: attach_calls.append(cmd) or subprocess.CompletedProcess(
-                args=cmd, returncode=0),
-        )
-
-        cmd_attach(SimpleNamespace(task_id=task_id))
-        assert any("switch-client" in str(c) for c in attach_calls)
+    def test_empty_string_exits(self):
+        with pytest.raises(SystemExit):
+            _parse_issue_arg("")
 
 
-class TestCmdStopGuidance:
-    """Test that cmd_stop shows restart/logs guidance after stopping."""
+class TestCmdStartFile:
+    """Tests for --file flag in cmd_start."""
 
-    def test_stop_prints_guidance(self, monkeypatch, capsys):
-        """After stopping, cmd_stop prints restart and logs commands."""
-        task_id = "abcd1234"
-        persistence.create_task(task_id, "test")
-        persistence.update_task(task_id, state="IMPLEMENT")
-        monkeypatch.setattr(
-            subprocess, "run",
-            lambda cmd, **kw: subprocess.CompletedProcess(args=cmd, returncode=0),
-        )
-
-        cmd_stop(SimpleNamespace(task_id=task_id))
-
-        captured = capsys.readouterr()
-        assert "restart" in captured.out
-        assert "logs" in captured.out
-
-
-class TestCmdResumeFollow:
-    """Test auto-follow behavior after autopilot resume."""
-
-    def _stub_resume_deps(self, monkeypatch):
+    def _stub_start_deps(self, monkeypatch):
+        """Stub all cmd_start dependencies so it doesn't hit real systems."""
         monkeypatch.setattr(
             "autopilot_loop.cli.load_config",
-            lambda **kw: {"model": "m", "max_iterations": 3},
+            lambda overrides: {
+                "model": "test-model",
+                "max_iterations": 3,
+                "branch_pattern": "autopilot/{task_id}",
+            },
         )
-        monkeypatch.setattr(
-            "autopilot_loop.github_api.get_repo_nwo",
-            lambda: "owner/my-repo",
-        )
+        monkeypatch.setattr("autopilot_loop.cli._detect_autopilot_branch", lambda: None)
         monkeypatch.setattr("autopilot_loop.cli._check_branch_lock", lambda b: None)
         monkeypatch.setattr("autopilot_loop.cli._launch_in_tmux", lambda *a, **kw: None)
+        monkeypatch.setattr("autopilot_loop.cli._add_to_git_exclude", lambda f: None)
 
+    def _make_args(self, **overrides):
+        defaults = {
+            "prompt": None,
+            "issue": None,
+            "file": None,
+            "plan": False,
+            "model": None,
+            "max_iters": None,
+            "dry_run": False,
+            "no_follow": True,
+        }
+        defaults.update(overrides)
+        return SimpleNamespace(**defaults)
+
+    def test_file_reads_prompt(self, tmp_path, monkeypatch):
+        """--file reads the file contents as the prompt."""
+        self._stub_start_deps(monkeypatch)
+        prompt_file = tmp_path / "task.txt"
+        prompt_file.write_text("Implement feature X with tests")
+
+        cmd_start(self._make_args(file=str(prompt_file)))
+
+        # Verify task was created with file contents as prompt
+        tasks = persistence.list_tasks(limit=1)
+        assert len(tasks) == 1
+        assert tasks[0]["prompt"] == "Implement feature X with tests"
+        assert tasks[0]["prompt_file"] == str(prompt_file)
+
+    def test_file_not_found_exits(self, monkeypatch):
+        """--file with nonexistent file exits with error."""
+        self._stub_start_deps(monkeypatch)
+        with pytest.raises(SystemExit):
+            cmd_start(self._make_args(file="/nonexistent/path.txt"))
+
+    def test_empty_file_exits(self, tmp_path, monkeypatch):
+        """--file with empty file exits with error."""
+        self._stub_start_deps(monkeypatch)
+        empty_file = tmp_path / "empty.txt"
+        empty_file.write_text("")
+        with pytest.raises(SystemExit):
+            cmd_start(self._make_args(file=str(empty_file)))
+
+    def test_whitespace_only_file_exits(self, tmp_path, monkeypatch):
+        """--file with whitespace-only file exits with error."""
+        self._stub_start_deps(monkeypatch)
+        ws_file = tmp_path / "whitespace.txt"
+        ws_file.write_text("   \n\n  \t  ")
+        with pytest.raises(SystemExit):
+            cmd_start(self._make_args(file=str(ws_file)))
+
+    def test_mutual_exclusion_file_and_prompt(self, monkeypatch):
+        """--file and --prompt together should exit with error."""
+        self._stub_start_deps(monkeypatch)
+        with pytest.raises(SystemExit):
+            cmd_start(self._make_args(file="some.txt", prompt="inline prompt"))
+
+    def test_mutual_exclusion_file_and_issue(self, monkeypatch):
+        """--file and --issue together should exit with error."""
+        self._stub_start_deps(monkeypatch)
+        with pytest.raises(SystemExit):
+            cmd_start(self._make_args(file="some.txt", issue="123"))
+
+    def test_mutual_exclusion_prompt_and_issue(self, monkeypatch):
+        """--prompt and --issue together should exit with error."""
+        self._stub_start_deps(monkeypatch)
+        with pytest.raises(SystemExit):
+            cmd_start(self._make_args(prompt="inline", issue="123"))
+
+    def test_no_source_exits(self, monkeypatch):
+        """No --prompt, --issue, or --file exits with error."""
+        self._stub_start_deps(monkeypatch)
+        with pytest.raises(SystemExit):
+            cmd_start(self._make_args())
+
+    def test_issue_url_resolves(self, monkeypatch):
+        """--issue with a full URL fetches from the correct repo."""
+        self._stub_start_deps(monkeypatch)
+
+        calls = []
+
+        def fake_get_issue(num, repo=None):
+            calls.append((num, repo))
+            return {"title": "Test Issue", "body": "Issue body"}
+
+        monkeypatch.setattr("autopilot_loop.github_api.get_issue", fake_get_issue)
+
+        cmd_start(self._make_args(issue="https://github.com/org/docs/issues/99"))
+
+        assert len(calls) == 1
+        assert calls[0] == (99, "org/docs")
+
+        tasks = persistence.list_tasks(limit=1)
+        assert "org/docs#99" in tasks[0]["prompt"]
+
+    def test_issue_plain_number(self, monkeypatch):
+        """--issue with a plain number fetches from local repo."""
+        self._stub_start_deps(monkeypatch)
+
+        calls = []
+
+        def fake_get_issue(num, repo=None):
+            calls.append((num, repo))
+            return {"title": "Local Issue", "body": "Body text"}
+
+        monkeypatch.setattr("autopilot_loop.github_api.get_issue", fake_get_issue)
+
+        cmd_start(self._make_args(issue="42"))
+
+        assert len(calls) == 1
+        assert calls[0] == (42, None)
+
+
+class TestAddToGitExclude:
+    """Tests for _add_to_git_exclude."""
+
+    def test_adds_path(self, tmp_path, monkeypatch):
+        """Adds file path to .git/info/exclude."""
+        git_dir = tmp_path / ".git" / "info"
+        git_dir.mkdir(parents=True)
+        exclude_file = git_dir / "exclude"
+
+        # Stub git rev-parse to return tmp_path as repo root
         def fake_run(cmd, **kw):
-            if "pr" in cmd and "view" in cmd:
-                return subprocess.CompletedProcess(
-                    args=cmd, returncode=0,
-                    stdout="fix/something\tOPEN\towner/my-repo\n",
-                    stderr="",
-                )
-            return subprocess.CompletedProcess(args=cmd, returncode=0, stdout="", stderr="")
+            return subprocess.CompletedProcess(
+                args=cmd, returncode=0, stdout=str(tmp_path) + "\n", stderr="",
+            )
 
         monkeypatch.setattr(subprocess, "run", fake_run)
 
-    def test_follow_calls_logs_tui(self, monkeypatch):
-        """Default resume auto-opens log viewer."""
-        self._stub_resume_deps(monkeypatch)
-        monkeypatch.setattr("sys.stdout.isatty", lambda: True)
+        prompt_file = tmp_path / "my-task.txt"
+        prompt_file.write_text("task")
 
-        calls = []
-        monkeypatch.setattr(
-            "autopilot_loop.dashboard.logs_tui",
-            lambda task_id: calls.append(task_id),
-        )
+        _add_to_git_exclude(str(prompt_file))
 
-        cmd_resume(SimpleNamespace(pr=42, no_follow=False))
-        assert len(calls) == 1
+        assert "my-task.txt" in exclude_file.read_text()
 
-    def test_no_follow_skips_logs_tui(self, monkeypatch):
-        """--no-follow skips log viewer."""
-        self._stub_resume_deps(monkeypatch)
-        monkeypatch.setattr("sys.stdout.isatty", lambda: True)
-
-        calls = []
-        monkeypatch.setattr(
-            "autopilot_loop.dashboard.logs_tui",
-            lambda task_id: calls.append(task_id),
-        )
-
-        cmd_resume(SimpleNamespace(pr=42, no_follow=True))
-        assert len(calls) == 0
-
-    def test_non_tty_skips_logs_tui(self, monkeypatch):
-        """Non-TTY stdout skips log viewer."""
-        self._stub_resume_deps(monkeypatch)
-        monkeypatch.setattr("sys.stdout.isatty", lambda: False)
-
-        calls = []
-        monkeypatch.setattr(
-            "autopilot_loop.dashboard.logs_tui",
-            lambda task_id: calls.append(task_id),
-        )
-
-        cmd_resume(SimpleNamespace(pr=42, no_follow=False))
-        assert len(calls) == 0
-
-
-class TestCmdRestartFollow:
-    """Test auto-follow behavior after autopilot restart."""
-
-    def _create_stopped_task(self):
-        task_id = "abcd1234"
-        persistence.create_task(task_id, "test")
-        persistence.update_task(
-            task_id, state="STOPPED", pre_stop_state="IMPLEMENT", branch="autopilot/abcd1234",
-        )
-        return task_id
-
-    def _stub_restart_deps(self, monkeypatch):
-        monkeypatch.setattr("autopilot_loop.cli._launch_in_tmux", lambda *a, **kw: None)
-
-    def test_follow_calls_logs_tui(self, monkeypatch):
-        """Default restart auto-opens log viewer."""
-        task_id = self._create_stopped_task()
-        self._stub_restart_deps(monkeypatch)
-        monkeypatch.setattr("sys.stdout.isatty", lambda: True)
-
-        calls = []
-        monkeypatch.setattr(
-            "autopilot_loop.dashboard.logs_tui",
-            lambda tid: calls.append(tid),
-        )
-
-        cmd_restart(SimpleNamespace(task_id=task_id, no_follow=False))
-        assert len(calls) == 1
-
-    def test_no_follow_skips_logs_tui(self, monkeypatch):
-        """--no-follow skips log viewer."""
-        task_id = self._create_stopped_task()
-        self._stub_restart_deps(monkeypatch)
-        monkeypatch.setattr("sys.stdout.isatty", lambda: True)
-
-        calls = []
-        monkeypatch.setattr(
-            "autopilot_loop.dashboard.logs_tui",
-            lambda tid: calls.append(tid),
-        )
-
-        cmd_restart(SimpleNamespace(task_id=task_id, no_follow=True))
-        assert len(calls) == 0
-
-
-class TestCmdFixCiFollow:
-    """Test auto-follow behavior after autopilot fix-ci."""
-
-    def _stub_fixci_deps(self, monkeypatch):
-        monkeypatch.setattr(
-            "autopilot_loop.cli.load_config",
-            lambda overrides: {"model": "m", "max_iterations": 3},
-        )
-        monkeypatch.setattr("autopilot_loop.cli._check_branch_lock", lambda b: None)
-        monkeypatch.setattr("autopilot_loop.cli._launch_in_tmux", lambda *a, **kw: None)
-        monkeypatch.setattr(
-            "autopilot_loop.github_api.get_failed_checks",
-            lambda pr: [{"name": "build"}],
-        )
+    def test_idempotent(self, tmp_path, monkeypatch):
+        """Adding the same path twice only creates one entry."""
+        git_dir = tmp_path / ".git" / "info"
+        git_dir.mkdir(parents=True)
+        exclude_file = git_dir / "exclude"
+        exclude_file.write_text("my-task.txt\n")
 
         def fake_run(cmd, **kw):
-            if "pr" in cmd and "view" in cmd:
-                return subprocess.CompletedProcess(
-                    args=cmd, returncode=0, stdout="fix-branch\n", stderr="",
-                )
-            return subprocess.CompletedProcess(args=cmd, returncode=0, stdout="", stderr="")
+            return subprocess.CompletedProcess(
+                args=cmd, returncode=0, stdout=str(tmp_path) + "\n", stderr="",
+            )
 
         monkeypatch.setattr(subprocess, "run", fake_run)
 
-    def test_follow_calls_logs_tui(self, monkeypatch):
-        """Default fix-ci auto-opens log viewer."""
-        self._stub_fixci_deps(monkeypatch)
-        monkeypatch.setattr("sys.stdout.isatty", lambda: True)
+        _add_to_git_exclude(str(tmp_path / "my-task.txt"))
 
-        calls = []
-        monkeypatch.setattr(
-            "autopilot_loop.dashboard.logs_tui",
-            lambda tid: calls.append(tid),
-        )
-
-        cmd_fix_ci(SimpleNamespace(pr=10, checks="build", max_iters=None, model=None, no_follow=False))
-        assert len(calls) == 1
-
-    def test_no_follow_skips_logs_tui(self, monkeypatch):
-        """--no-follow skips log viewer."""
-        self._stub_fixci_deps(monkeypatch)
-        monkeypatch.setattr("sys.stdout.isatty", lambda: True)
-
-        calls = []
-        monkeypatch.setattr(
-            "autopilot_loop.dashboard.logs_tui",
-            lambda tid: calls.append(tid),
-        )
-
-        cmd_fix_ci(SimpleNamespace(pr=10, checks="build", max_iters=None, model=None, no_follow=True))
-        assert len(calls) == 0
+        lines = [ln for ln in exclude_file.read_text().splitlines() if ln == "my-task.txt"]
+        assert len(lines) == 1

@@ -50,6 +50,8 @@ All runs in tmux. Close your laptop — it keeps going.
 | `autopilot start --prompt "..."` | Start a new task |
 | `autopilot start --prompt "..." --plan` | Plan first, then implement |
 | `autopilot start --issue 123` | Start from a GitHub issue |
+| `autopilot start --issue https://github.com/org/repo/issues/45` | Start from a cross-repo issue URL |
+| `autopilot start --file task.txt` | Start from a prompt file |
 | `autopilot resume --pr 42345` | Resume from an existing PR |
 | `autopilot fix-ci --pr 42345` | [Fix CI failures](docs/fix-ci-workflow.md) |
 | `autopilot stop <id>` | Stop a running task |

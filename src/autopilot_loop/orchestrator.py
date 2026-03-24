@@ -321,12 +321,14 @@ class Orchestrator(BaseOrchestrator):
                 task_description=self.task["prompt"],
                 branch_name=branch,
                 custom_instructions=self.config.get("custom_instructions", ""),
+                prompt_file=self.task.get("prompt_file"),
             )
         else:
             prompt = implement_prompt(
                 task_description=self.task["prompt"],
                 branch_name=branch,
                 custom_instructions=self.config.get("custom_instructions", ""),
+                prompt_file=self.task.get("prompt_file"),
             )
 
         result = self._run_agent_with_retry("IMPLEMENT", prompt, "implement")
@@ -343,6 +345,7 @@ class Orchestrator(BaseOrchestrator):
             task_description=self.task["prompt"],
             branch_name=branch,
             custom_instructions=self.config.get("custom_instructions", ""),
+            prompt_file=self.task.get("prompt_file"),
         )
 
         result = self._run_agent_with_retry("PLAN_AND_IMPLEMENT", prompt, "plan-and-implement")
@@ -608,6 +611,7 @@ class Orchestrator(BaseOrchestrator):
             review_comments_text=review_text,
             custom_instructions=self.config.get("custom_instructions", ""),
             previous_context=previous_context,
+            prompt_file=self.task.get("prompt_file"),
         )
 
         # Record head SHA before fix
@@ -811,6 +815,7 @@ class CIOrchestrator(BaseOrchestrator):
         prompt = fix_ci_prompt(
             ci_annotations_text=annotations_text,
             custom_instructions=self.config.get("custom_instructions", ""),
+            prompt_file=self.task.get("prompt_file"),
         )
 
         self._pre_fix_sha = get_head_sha(self.task["branch"])
