@@ -277,7 +277,7 @@ def cmd_start(args):
         print("  Model: %s" % config["model"])
         print("  Max iterations: %d" % config["max_iterations"])
         print("  Plan mode: %s" % args.plan)
-        print("  Prompt: %s" % prompt[:200])
+        print("  Prompt (%d chars):\n%s" % (len(prompt), prompt))
         return
 
     _launch_in_tmux(task_id, mode="review", branch=branch)
