@@ -1,6 +1,13 @@
 """CLI entry point for autopilot-loop.
 
 Subcommands: start, resume, status, logs, stop, restart, fix-ci, attach, next, doctor.
+
+The ``start`` command accepts a task prompt via one of three mutually exclusive
+options:
+
+- ``--prompt / -p`` — inline text on the command line.
+- ``--issue / -i``  — GitHub issue number or full URL (cross-repo supported).
+- ``--file / -f``   — path to a plain-text file whose contents become the prompt.
 """
 
 import argparse
@@ -79,18 +86,6 @@ def _detect_autopilot_branch():
     return None
 
 
-def _tmux_session_exists(tmux_session):
-    """Check if a tmux session exists."""
-    try:
-        result = subprocess.run(
-            ["tmux", "has-session", "-t", tmux_session],
-            capture_output=True,
-        )
-        return result.returncode == 0
-    except FileNotFoundError:
-        return False
-
-
 def _launch_in_tmux(task_id, mode="review", branch=None, pr_number=None):
     """Launch a task in tmux with standardized output.
 
@@ -151,6 +146,57 @@ def _launch_in_tmux(task_id, mode="review", branch=None, pr_number=None):
     print("  autopilot stop %s            — stop task" % task_id)
 
 
+def _parse_issue_arg(value):
+    """Parse --issue value: plain number or full GitHub URL.
+
+    Returns (issue_number, repo) where repo is 'owner/repo' or None for local.
+    """
+    # Full URL: https://github.com/owner/repo/issues/123
+    m = re.match(r'https?://github\.com/([^/]+/[^/]+)/issues/(\d+)', value)
+    if m:
+        return int(m.group(2)), m.group(1)
+
+    # Plain number
+    if value.isdigit():
+        return int(value), None
+
+    print("Error: --issue must be a number or a GitHub issue URL "
+          "(e.g. https://github.com/owner/repo/issues/123)", file=sys.stderr)
+    sys.exit(1)
+
+
+def _add_to_git_exclude(filepath):
+    """Add a file path to .git/info/exclude (idempotent, local-only)."""
+    try:
+        result = subprocess.run(
+            ["git", "rev-parse", "--show-toplevel"],
+            capture_output=True, text=True, check=True,
+        )
+        repo_root = result.stdout.strip()
+    except (FileNotFoundError, subprocess.CalledProcessError):
+        logger.warning("Could not determine git root; skipping .git/info/exclude")
+        return
+
+    abs_path = os.path.abspath(filepath)
+    rel_path = os.path.relpath(abs_path, repo_root)
+
+    exclude_dir = os.path.join(repo_root, ".git", "info")
+    exclude_file = os.path.join(exclude_dir, "exclude")
+
+    os.makedirs(exclude_dir, exist_ok=True)
+
+    # Read existing entries
+    existing = set()
+    if os.path.isfile(exclude_file):
+        with open(exclude_file, "r") as f:
+            existing = set(f.read().splitlines())
+
+    if rel_path not in existing:
+        with open(exclude_file, "a") as f:
+            f.write(rel_path + "\n")
+        logger.info("Added %s to .git/info/exclude", rel_path)
+
+
 def cmd_start(args):
     """Start a new autopilot task."""
     config = load_config({
@@ -158,16 +204,43 @@ def cmd_start(args):
         "max_iterations": args.max_iters,
     })
 
-    # Resolve prompt
+    # Resolve prompt — exactly one of --prompt, --issue, --file must be provided
+    prompt_file = None
+    source_count = sum(1 for x in [args.prompt, args.issue, getattr(args, "file", None)] if x)
+    if source_count > 1:
+        print("Error: --prompt, --issue, and --file are mutually exclusive",
+              file=sys.stderr)
+        sys.exit(1)
+    if source_count == 0:
+        print("Error: one of --prompt, --issue, or --file is required",
+              file=sys.stderr)
+        sys.exit(1)
+
     if args.issue:
         from autopilot_loop.github_api import get_issue
-        issue = get_issue(args.issue)
-        prompt = "Issue #%d: %s\n\n%s" % (args.issue, issue["title"], issue["body"][:4000])
-    elif args.prompt:
-        prompt = args.prompt
+        issue_number, repo = _parse_issue_arg(args.issue)
+        issue = get_issue(issue_number, repo=repo)
+        if repo:
+            prompt = "Issue %s#%d: %s\n\n%s" % (repo, issue_number, issue["title"], issue["body"][:4000])
+        else:
+            prompt = "Issue #%d: %s\n\n%s" % (issue_number, issue["title"], issue["body"][:4000])
+        logger.info("Prompt source: issue #%d%s (%d chars)",
+                     issue_number, " (%s)" % repo if repo else "", len(prompt))
+    elif getattr(args, "file", None):
+        prompt_file = args.file
+        if not os.path.isfile(prompt_file):
+            print("Error: file not found: %s" % prompt_file, file=sys.stderr)
+            sys.exit(1)
+        with open(prompt_file, "r") as f:
+            prompt = f.read().strip()
+        if not prompt:
+            print("Error: file is empty: %s" % prompt_file, file=sys.stderr)
+            sys.exit(1)
+        _add_to_git_exclude(prompt_file)
+        logger.info("Prompt source: file %s (%d chars)", prompt_file, len(prompt))
     else:
-        print("Error: --prompt or --issue is required", file=sys.stderr)
-        sys.exit(1)
+        prompt = args.prompt
+        logger.info("Prompt source: --prompt arg (%d chars)", len(prompt))
 
     task_id = _generate_task_id()
 
@@ -192,6 +265,8 @@ def cmd_start(args):
 
     from autopilot_loop.persistence import update_task
     update_task(task_id, branch=branch)
+    if prompt_file:
+        update_task(task_id, prompt_file=prompt_file)
 
     if existing_branch:
         update_task(task_id, existing_branch=1)
@@ -300,10 +375,6 @@ def cmd_resume(args):
 
     _launch_in_tmux(task_id, mode="resume", branch=branch, pr_number=args.pr)
 
-    if not args.no_follow and sys.stdout.isatty():
-        from autopilot_loop.dashboard import logs_tui
-        logs_tui(task_id)
-
 
 def cmd_status(args):
     """Show status of all autopilot tasks."""
@@ -339,26 +410,6 @@ def cmd_attach(args):
         sys.exit(1)
 
     tmux_session = "autopilot-%s" % task_id
-
-    # If the task is in a terminal state and the session is gone, show guidance
-    if task["state"] in TERMINAL_STATES and not _tmux_session_exists(tmux_session):
-        state = task["state"]
-        if state == "STOPPED":
-            pre = task.get("pre_stop_state") or "unknown"
-            print("Task %s is STOPPED (was in %s)." % (task_id, pre))
-            print("  autopilot restart %s   — restart task" % task_id)
-        elif state == "COMPLETE":
-            pr = task.get("pr_number")
-            if pr:
-                print("Task %s is COMPLETE (PR #%d)." % (task_id, pr))
-            else:
-                print("Task %s is COMPLETE." % task_id)
-        elif state == "FAILED":
-            print("Task %s is FAILED." % task_id)
-            print("  autopilot restart %s   — restart task" % task_id)
-        print("  autopilot logs --session %s   — view logs" % task_id)
-        return
-
     try:
         subprocess.run(["tmux", "switch-client", "-t", tmux_session], check=True)
     except subprocess.CalledProcessError:
@@ -382,9 +433,7 @@ def cmd_next(args):
         for t in tasks:
             if t["state"] == state:
                 tmux_session = "autopilot-%s" % t["id"]
-                if not _tmux_session_exists(tmux_session):
-                    continue
-                print("\u2713 Switching to task %s (state: %s)" % (t["id"], state))
+                print("✓ Switching to task %s (state: %s)" % (t["id"], state))
                 try:
                     subprocess.run(["tmux", "switch-client", "-t", tmux_session], check=True)
                     return
@@ -560,10 +609,6 @@ def cmd_fix_ci(args):
 
     _launch_in_tmux(task_id, mode="ci", branch=branch, pr_number=args.pr)
 
-    if not args.no_follow and sys.stdout.isatty():
-        from autopilot_loop.dashboard import logs_tui
-        logs_tui(task_id)
-
 
 def cmd_stop(args):
     """Stop a running task."""
@@ -586,11 +631,7 @@ def cmd_stop(args):
     if task and task["state"] not in TERMINAL_STATES:
         from autopilot_loop.persistence import update_task
         update_task(task_id, pre_stop_state=task["state"], state="STOPPED")
-        print("\u2713 Task %s marked as STOPPED" % task_id)
-
-    print()
-    print("  autopilot restart %s   — restart task" % task_id)
-    print("  autopilot logs --session %s   — view logs" % task_id)
+        print("✓ Task %s marked as STOPPED" % task_id)
 
 
 def cmd_restart(args):
@@ -629,10 +670,6 @@ def cmd_restart(args):
     mode = "ci" if task.get("task_mode") == "ci" else "review"
     _launch_in_tmux(task_id, mode="restart (%s)" % mode, branch=task.get("branch"),
                     pr_number=task.get("pr_number"))
-
-    if not args.no_follow and sys.stdout.isatty():
-        from autopilot_loop.dashboard import logs_tui
-        logs_tui(task_id)
 
 
 def cmd_doctor(args):
@@ -737,7 +774,8 @@ def main():
     # start
     p_start = subparsers.add_parser("start", help="Start a new autopilot task")
     p_start.add_argument("--prompt", "-p", type=str, help="Task description")
-    p_start.add_argument("--issue", "-i", type=int, help="GitHub issue number")
+    p_start.add_argument("--issue", "-i", type=str, help="GitHub issue number or full URL")
+    p_start.add_argument("--file", "-f", type=str, help="Read prompt from a file")
     p_start.add_argument("--plan", action="store_true",
                          help="Agent creates a plan first, then implements (default: implement only)")
     p_start.add_argument("--model", type=str, help="Model override")
@@ -750,8 +788,6 @@ def main():
     # resume
     p_resume = subparsers.add_parser("resume", help="Resume from an existing PR")
     p_resume.add_argument("--pr", type=int, required=True, help="PR number to resume")
-    p_resume.add_argument("--no-follow", action="store_true",
-                          help="Don't auto-open log viewer after resume")
 
     # status
     p_status = subparsers.add_parser("status", help="Show task status")
@@ -773,8 +809,6 @@ def main():
     # restart
     p_restart = subparsers.add_parser("restart", help="Restart a stopped task")
     p_restart.add_argument("task_id", type=str, help="Task ID to restart")
-    p_restart.add_argument("--no-follow", action="store_true",
-                           help="Don't auto-open log viewer after restart")
 
     # fix-ci
     p_fixci = subparsers.add_parser("fix-ci", help="Fix CI failures on an existing PR")
@@ -784,8 +818,6 @@ def main():
                               "(e.g. 'build' matches 'build-ubuntu')")
     p_fixci.add_argument("--max-iters", type=int, help="Max fix iterations")
     p_fixci.add_argument("--model", type=str, help="Model override")
-    p_fixci.add_argument("--no-follow", action="store_true",
-                         help="Don't auto-open log viewer after fix-ci")
 
     # attach
     p_attach = subparsers.add_parser("attach", help="Attach to a task's tmux session")

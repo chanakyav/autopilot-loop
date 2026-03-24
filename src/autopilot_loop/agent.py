@@ -79,7 +79,8 @@ def run_agent(prompt, session_dir, model="claude-opus-4.6", timeout=1800, extra_
     if extra_flags:
         cmd.extend(extra_flags)
 
-    logger.info("Running agent: copilot -p '%.100s...' --model %s (timeout: %ds)", prompt, model, timeout)
+    logger.info("Running agent: copilot -p --model %s (timeout: %ds)", model, timeout)
+    logger.info("Full prompt (%d chars):\n%s", len(prompt), prompt)
     logger.debug("Full command: %s", " ".join(cmd))
 
     start_time = time.time()

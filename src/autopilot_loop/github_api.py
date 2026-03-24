@@ -167,16 +167,20 @@ def is_copilot_review_complete(pr_number, after_ts=None):
     return submitted > after_ts
 
 
-def get_issue(issue_number):
+def get_issue(issue_number, repo=None):
     """Fetch a GitHub issue's title and body.
+
+    Args:
+        issue_number: Issue number (int or str).
+        repo: Optional 'owner/repo' string for cross-repo issues.
 
     Returns:
         Dict with {title, body}.
     """
-    output = _run_gh([
-        "issue", "view", str(issue_number),
-        "--json", "title,body",
-    ])
+    cmd = ["issue", "view", str(issue_number), "--json", "title,body"]
+    if repo:
+        cmd.extend(["--repo", repo])
+    output = _run_gh(cmd)
     return json.loads(output)
 
 

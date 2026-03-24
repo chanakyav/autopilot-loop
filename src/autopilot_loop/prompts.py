@@ -15,13 +15,28 @@ __all__ = [
 ]
 
 
-def implement_prompt(task_description, branch_name, custom_instructions=""):
+def _file_protection_instruction(prompt_file):
+    """Return an instruction to protect the prompt file, or empty string."""
+    if not prompt_file:
+        return ""
+    return (
+        "IMPORTANT: Do NOT read, modify, rename, delete, or commit the file `%s`.\n"
+        "It contains the task instructions and must remain unchanged.\n"
+        % prompt_file
+    )
+
+
+def implement_prompt(task_description, branch_name, custom_instructions="", prompt_file=None):
     """Prompt for the IMPLEMENT phase.
 
     Agent implements the task, creates branch, commits, creates draft PR
     using the repo's PR template, pushes, and self-reviews.
     """
     parts = []
+
+    file_protection = _file_protection_instruction(prompt_file)
+    if file_protection:
+        parts.append(file_protection)
 
     if custom_instructions:
         parts.append(custom_instructions.strip())
@@ -51,7 +66,7 @@ def implement_prompt(task_description, branch_name, custom_instructions=""):
     return "\n".join(parts)
 
 
-def implement_on_existing_branch_prompt(task_description, branch_name, custom_instructions=""):
+def implement_on_existing_branch_prompt(task_description, branch_name, custom_instructions="", prompt_file=None):
     """Prompt for the IMPLEMENT phase on an existing branch.
 
     Used when the user starts a new task on a branch that already exists
@@ -59,6 +74,10 @@ def implement_on_existing_branch_prompt(task_description, branch_name, custom_in
     and should commit directly on the current branch.
     """
     parts = []
+
+    file_protection = _file_protection_instruction(prompt_file)
+    if file_protection:
+        parts.append(file_protection)
 
     if custom_instructions:
         parts.append(custom_instructions.strip())
@@ -89,12 +108,16 @@ def implement_on_existing_branch_prompt(task_description, branch_name, custom_in
     return "\n".join(parts)
 
 
-def plan_and_implement_prompt(task_description, branch_name, custom_instructions=""):
+def plan_and_implement_prompt(task_description, branch_name, custom_instructions="", prompt_file=None):
     """Prompt for the PLAN_AND_IMPLEMENT phase.
 
     Same as implement but asks the agent to plan first.
     """
     parts = []
+
+    file_protection = _file_protection_instruction(prompt_file)
+    if file_protection:
+        parts.append(file_protection)
 
     if custom_instructions:
         parts.append(custom_instructions.strip())
@@ -129,13 +152,17 @@ def plan_and_implement_prompt(task_description, branch_name, custom_instructions
     return "\n".join(parts)
 
 
-def fix_prompt(review_comments_text, custom_instructions="", previous_context=""):
+def fix_prompt(review_comments_text, custom_instructions="", previous_context="", prompt_file=None):
     """Prompt for the FIX phase.
 
     Agent addresses PR review comments, commits, pushes, self-reviews,
     and writes a summary file for each comment.
     """
     parts = []
+
+    file_protection = _file_protection_instruction(prompt_file)
+    if file_protection:
+        parts.append(file_protection)
 
     if custom_instructions:
         parts.append(custom_instructions.strip())
@@ -223,13 +250,17 @@ def format_review_for_prompt(review_body, inline_comments):
     return "\n".join(parts)
 
 
-def fix_ci_prompt(ci_annotations_text, custom_instructions=""):
+def fix_ci_prompt(ci_annotations_text, custom_instructions="", prompt_file=None):
     """Prompt for the FIX_CI phase.
 
     Agent fixes CI failures based on annotations, runs the full test suite,
     commits, and pushes.
     """
     parts = []
+
+    file_protection = _file_protection_instruction(prompt_file)
+    if file_protection:
+        parts.append(file_protection)
 
     if custom_instructions:
         parts.append(custom_instructions.strip())

@@ -807,6 +807,49 @@ class TestFixPromptPreviousContext:
         assert "Previous Iteration Context" not in prompt
 
 
+class TestPromptFileProtection:
+    """Tests for prompt file protection instruction in prompt builders."""
+
+    def test_implement_prompt_with_file(self):
+        from autopilot_loop.prompts import implement_prompt
+        prompt = implement_prompt("Do X", "autopilot/abc", prompt_file="task.txt")
+        assert "Do NOT" in prompt
+        assert "task.txt" in prompt
+
+    def test_implement_prompt_without_file(self):
+        from autopilot_loop.prompts import implement_prompt
+        prompt = implement_prompt("Do X", "autopilot/abc")
+        assert "Do NOT" not in prompt or "Do NOT use generic" in prompt
+
+    def test_plan_and_implement_prompt_with_file(self):
+        from autopilot_loop.prompts import plan_and_implement_prompt
+        prompt = plan_and_implement_prompt("Do X", "autopilot/abc", prompt_file="plan.md")
+        assert "plan.md" in prompt
+        assert "must remain unchanged" in prompt
+
+    def test_fix_prompt_with_file(self):
+        from autopilot_loop.prompts import fix_prompt
+        prompt = fix_prompt("comments", prompt_file="instructions.txt")
+        assert "instructions.txt" in prompt
+        assert "must remain unchanged" in prompt
+
+    def test_fix_prompt_without_file(self):
+        from autopilot_loop.prompts import fix_prompt
+        prompt = fix_prompt("comments")
+        assert "must remain unchanged" not in prompt
+
+    def test_fix_ci_prompt_with_file(self):
+        from autopilot_loop.prompts import fix_ci_prompt
+        prompt = fix_ci_prompt("annotations", prompt_file="task.txt")
+        assert "task.txt" in prompt
+
+    def test_existing_branch_prompt_with_file(self):
+        from autopilot_loop.prompts import implement_on_existing_branch_prompt
+        prompt = implement_on_existing_branch_prompt("Do X", "autopilot/abc", prompt_file="task.txt")
+        assert "task.txt" in prompt
+        assert "must remain unchanged" in prompt
+
+
 class TestWorkspaceDirs:
     def test_auto_discovers_sibling_repos(self, tmp_path, monkeypatch, config):
         """Discovers sibling git repos under the parent directory."""
