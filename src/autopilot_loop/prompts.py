@@ -27,6 +27,20 @@ def _file_protection_instruction(prompt_file):
     )
 
 
+def _pre_commit_verification_instruction():
+    """Return a pre-commit quality gate instruction block."""
+    return (
+        "BEFORE committing, run the project's quality checks to catch errors early:\n"
+        "   a. Look for linter/formatter configuration in the repo (e.g. pyproject.toml\n"
+        "      with [tool.ruff], .eslintrc, Makefile lint targets, etc.) and run the\n"
+        "      appropriate lint command. Fix every reported error before proceeding.\n"
+        "   b. If the project has a type checker configured (mypy, pyright, tsc, etc.),\n"
+        "      run it and fix any type errors.\n"
+        "   c. Run the project's test suite and ensure all tests pass.\n"
+        "   d. Only after all checks pass, proceed to commit.\n"
+    )
+
+
 def implement_prompt(task_description, branch_name, custom_instructions="", prompt_file=None):
     """Prompt for the IMPLEMENT phase.
 
@@ -50,18 +64,19 @@ def implement_prompt(task_description, branch_name, custom_instructions="", prom
     parts.append(
         "1. Implement the task described above.\n"
         "2. Run any relevant tests to verify your changes work.\n"
-        "3. Create a new git branch named `%s`:\n"
+        "3. %s"
+        "4. Create a new git branch named `%s`:\n"
         "   git checkout -b %s\n"
-        "4. Stage and commit your changes with a proper, descriptive commit message\n"
+        "5. Stage and commit your changes with a proper, descriptive commit message\n"
         "   that explains what was changed and why. Do NOT use generic messages.\n"
-        "5. Create a draft pull request using `gh pr create --draft`. Use the repo's\n"
+        "6. Create a draft pull request using `gh pr create --draft`. Use the repo's\n"
         "   PR template (check `.github/PULL_REQUEST_TEMPLATE.md` or similar) to\n"
         "   structure the PR body. Write a clear title and fill in the template sections.\n"
-        "6. Push the branch: `git push -u origin %s`\n"
-        "7. After pushing, review your own changes by running `git diff main` and\n"
+        "7. Push the branch: `git push -u origin %s`\n"
+        "8. After pushing, review your own changes by running `git diff main` and\n"
         "   examining the output. If you find any issues (bugs, missing tests, style\n"
         "   problems), fix them, commit with a descriptive message, and push again.\n"
-        % (branch_name, branch_name, branch_name)
+        % (_pre_commit_verification_instruction(), branch_name, branch_name, branch_name)
     )
 
     return "\n".join(parts)
@@ -93,17 +108,18 @@ def implement_on_existing_branch_prompt(task_description, branch_name, custom_in
         "Work directly on this branch.\n\n"
         "1. Implement the task described above.\n"
         "2. Run any relevant tests to verify your changes work.\n"
-        "3. Stage and commit your changes with a proper, descriptive commit message\n"
+        "3. %s"
+        "4. Stage and commit your changes with a proper, descriptive commit message\n"
         "   that explains what was changed and why. Do NOT use generic messages.\n"
-        "4. If a PR already exists for this branch, push your changes. If no PR exists,\n"
+        "5. If a PR already exists for this branch, push your changes. If no PR exists,\n"
         "   create a draft pull request using `gh pr create --draft`. Use the repo's\n"
         "   PR template (check `.github/PULL_REQUEST_TEMPLATE.md` or similar) to\n"
         "   structure the PR body. Write a clear title and fill in the template sections.\n"
-        "5. Push the branch: `git push origin %s`\n"
-        "6. After pushing, review your own changes by running `git diff HEAD~1` and\n"
+        "6. Push the branch: `git push origin %s`\n"
+        "7. After pushing, review your own changes by running `git diff HEAD~1` and\n"
         "   examining the output. If you find any issues (bugs, missing tests, style\n"
         "   problems), fix them, commit with a descriptive message, and push again.\n"
-        % (branch_name, branch_name)
+        % (branch_name, _pre_commit_verification_instruction(), branch_name)
     )
 
     return "\n".join(parts)
@@ -136,25 +152,26 @@ def plan_and_implement_prompt(task_description, branch_name, custom_instructions
         "   - Any edge cases or risks\n"
         "2. Then implement the plan.\n"
         "3. Run any relevant tests to verify your changes work.\n"
-        "4. Create a new git branch named `%s`:\n"
+        "4. %s"
+        "5. Create a new git branch named `%s`:\n"
         "   git checkout -b %s\n"
-        "5. Stage and commit your changes with a proper, descriptive commit message\n"
+        "6. Stage and commit your changes with a proper, descriptive commit message\n"
         "   that explains what was changed and why. Do NOT use generic messages.\n"
-        "6. Create a draft pull request using `gh pr create --draft`. Use the repo's\n"
+        "7. Create a draft pull request using `gh pr create --draft`. Use the repo's\n"
         "   PR template (check `.github/PULL_REQUEST_TEMPLATE.md` or similar) to\n"
         "   structure the PR body. Write a clear title and fill in the template sections.\n"
-        "7. Push the branch: `git push -u origin %s`\n"
-        "8. After pushing, review your own changes by running `git diff main` and\n"
+        "8. Push the branch: `git push -u origin %s`\n"
+        "9. After pushing, review your own changes by running `git diff main` and\n"
         "   examining the output. If you find any issues (bugs, missing tests, style\n"
         "   problems), fix them, commit with a descriptive message, and push again.\n"
-        % (branch_name, branch_name, branch_name)
+        % (_pre_commit_verification_instruction(), branch_name, branch_name, branch_name)
     )
 
     return "\n".join(parts)
 
 
 def fix_prompt(review_comments_text, custom_instructions="", previous_context="",
-               bouncing_comments="", prompt_file=None):
+               bouncing_comments="", prompt_file=None, task_context=""):
     """Prompt for the FIX phase.
 
     Agent addresses PR review comments using a 3-tier verification model,
@@ -168,6 +185,12 @@ def fix_prompt(review_comments_text, custom_instructions="", previous_context=""
 
     if custom_instructions:
         parts.append(custom_instructions.strip())
+        parts.append("")
+
+    if task_context:
+        parts.append("## Task Context")
+        parts.append("")
+        parts.append(task_context.strip())
         parts.append("")
 
     if previous_context:
@@ -222,16 +245,17 @@ def fix_prompt(review_comments_text, custom_instructions="", previous_context=""
         "   using the 3-tier model.\n"
         "2. Make code changes ONLY for Tier 1 (fixed) comments.\n"
         "3. Run any relevant tests to verify your fixes work.\n"
-        "4. Commit with a descriptive message that explains what review feedback\n"
+        "4. %s"
+        "5. Commit with a descriptive message that explains what review feedback\n"
         "   was addressed. Do NOT use generic messages like 'fix review comments'.\n"
         "   Instead, describe the specific changes, e.g.:\n"
         "   'Fix dirty-tracking semantics in user_queries, add missing\n"
         "    type annotation to billing_service'\n"
-        "5. Push the changes.\n"
-        "6. After pushing, review your own fix by running `git diff HEAD~1` and\n"
+        "6. Push the changes.\n"
+        "7. After pushing, review your own fix by running `git diff HEAD~1` and\n"
         "   examining the output. If you introduced any new issues while fixing\n"
         "   the review comments, fix them, commit, and push again.\n"
-        "7. IMPORTANT: Write a JSON file at `.autopilot-fix-summary.json` in the\n"
+        "8. IMPORTANT: Write a JSON file at `.autopilot-fix-summary.json` in the\n"
         "   repo root with your resolution for EACH comment. Use this exact format:\n"
         "   ```json\n"
         '   [\n'
@@ -247,6 +271,7 @@ def fix_prompt(review_comments_text, custom_instructions="", previous_context=""
         "   Status must be `fixed`, `skipped`, `dismissed`, or `uncertain`.\n"
         "   The `evidence` field is REQUIRED for `dismissed` and `uncertain` statuses.\n"
         "   Do NOT commit this file \u2014 just write it to disk.\n"
+        % _pre_commit_verification_instruction()
     )
 
     return "\n".join(parts)
@@ -314,13 +339,15 @@ def fix_ci_prompt(ci_annotations_text, custom_instructions="", prompt_file=None)
         "   (e.g., a missing test case for a new route), fix it once.\n"
         "3. Run the full test suite to verify your fixes don't break anything \u2014\n"
         "   not just the tests that failed. Adjacent test files often break too.\n"
-        "4. Commit with a descriptive message that explains what CI failures\n"
+        "4. %s"
+        "5. Commit with a descriptive message that explains what CI failures\n"
         "   were addressed. Do NOT use generic messages like 'fix CI'.\n"
         "   Instead, describe the specific changes.\n"
-        "5. Push the changes.\n"
-        "6. After pushing, review your own fix by running `git diff HEAD~1` and\n"
+        "6. Push the changes.\n"
+        "7. After pushing, review your own fix by running `git diff HEAD~1` and\n"
         "   examining the output. If you introduced any new issues, fix them,\n"
         "   commit, and push again.\n"
+        % _pre_commit_verification_instruction()
     )
 
     return "\n".join(parts)

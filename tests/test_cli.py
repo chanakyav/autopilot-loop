@@ -390,7 +390,7 @@ class TestCmdResumeRepoValidation:
 
         monkeypatch.setattr(subprocess, "run", fake_run)
 
-        args = SimpleNamespace(pr=42)
+        args = SimpleNamespace(pr=42, context="")
         # Should not raise
         cmd_resume(args)
 
@@ -426,6 +426,82 @@ class TestCmdResumeRepoValidation:
         captured = capsys.readouterr()
         # Should fail on repo mismatch BEFORE checking state
         assert "other-owner/other-repo" in captured.err
+
+
+class TestCmdResumeContext:
+    """Test that cmd_resume stores --context in the task prompt."""
+
+    def _gh_pr_view_output(self, branch, state, nwo):
+        return "%s\t%s\t%s\n" % (branch, state, nwo)
+
+    def test_context_stored_in_task_prompt(self, monkeypatch):
+        """cmd_resume with --context includes it in the task prompt."""
+        monkeypatch.setattr(
+            "autopilot_loop.cli.load_config",
+            lambda **kw: {"model": "m", "max_iterations": 3},
+        )
+        monkeypatch.setattr(
+            "autopilot_loop.github_api.get_repo_nwo",
+            lambda: "owner/my-repo",
+        )
+        monkeypatch.setattr("autopilot_loop.cli._check_branch_lock", lambda b: None)
+        monkeypatch.setattr("autopilot_loop.cli._launch_in_tmux", lambda *a, **kw: None)
+
+        def fake_run(cmd, **kw):
+            if "pr" in cmd and "view" in cmd:
+                return subprocess.CompletedProcess(
+                    args=cmd, returncode=0,
+                    stdout=self._gh_pr_view_output(
+                        "fix/branch", "OPEN", "owner/my-repo",
+                    ),
+                    stderr="",
+                )
+            return subprocess.CompletedProcess(args=cmd, returncode=0, stdout="", stderr="")
+
+        monkeypatch.setattr(subprocess, "run", fake_run)
+
+        args = SimpleNamespace(pr=42, context="fix all linting issues")
+        cmd_resume(args)
+
+        # Verify the task was created with context in the prompt
+        tasks = list(persistence.list_tasks())
+        assert len(tasks) == 1
+        assert "fix all linting issues" in tasks[0]["prompt"]
+        assert "Additional Instructions" in tasks[0]["prompt"]
+
+    def test_no_context_default_prompt(self, monkeypatch):
+        """cmd_resume without --context uses default prompt."""
+        monkeypatch.setattr(
+            "autopilot_loop.cli.load_config",
+            lambda **kw: {"model": "m", "max_iterations": 3},
+        )
+        monkeypatch.setattr(
+            "autopilot_loop.github_api.get_repo_nwo",
+            lambda: "owner/my-repo",
+        )
+        monkeypatch.setattr("autopilot_loop.cli._check_branch_lock", lambda b: None)
+        monkeypatch.setattr("autopilot_loop.cli._launch_in_tmux", lambda *a, **kw: None)
+
+        def fake_run(cmd, **kw):
+            if "pr" in cmd and "view" in cmd:
+                return subprocess.CompletedProcess(
+                    args=cmd, returncode=0,
+                    stdout=self._gh_pr_view_output(
+                        "fix/branch", "OPEN", "owner/my-repo",
+                    ),
+                    stderr="",
+                )
+            return subprocess.CompletedProcess(args=cmd, returncode=0, stdout="", stderr="")
+
+        monkeypatch.setattr(subprocess, "run", fake_run)
+
+        args = SimpleNamespace(pr=42, context="")
+        cmd_resume(args)
+
+        tasks = list(persistence.list_tasks())
+        assert len(tasks) == 1
+        assert tasks[0]["prompt"] == "(resumed from PR #42)"
+        assert "Additional Instructions" not in tasks[0]["prompt"]
 
 
 class TestParseIssueArg:

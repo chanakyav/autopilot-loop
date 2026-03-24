@@ -734,6 +734,7 @@ class Orchestrator(BaseOrchestrator):
             previous_context=previous_context,
             bouncing_comments=bouncing_context,
             prompt_file=self.task.get("prompt_file"),
+            task_context=self.task.get("prompt", ""),
         )
 
         # Record head SHA before fix
