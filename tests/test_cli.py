@@ -306,7 +306,7 @@ class TestCmdStartFollow:
         assert len(calls) == 0
 
     def test_dry_run_skips_logs_tui(self, monkeypatch, capsys):
-        """When --dry-run is set, logs_tui is NOT called."""
+        """When --dry-run is set, logs_tui is NOT called and no task is created."""
         self._stub_start_deps(monkeypatch)
         monkeypatch.setattr("sys.stdout.isatty", lambda: True)
 
@@ -319,6 +319,10 @@ class TestCmdStartFollow:
         from autopilot_loop.cli import cmd_start
         cmd_start(self._make_args(dry_run=True))
         assert len(calls) == 0
+
+        # Dry run should NOT create a task record
+        tasks = persistence.list_tasks(limit=10)
+        assert len(tasks) == 0
 
 
 class TestCmdResumeRepoValidation:

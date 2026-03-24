@@ -254,6 +254,15 @@ def cmd_start(args):
 
     _check_branch_lock(branch)
 
+    if args.dry_run:
+        print("DRY RUN — would start task %s" % task_id)
+        print("  Branch: %s" % branch)
+        print("  Model: %s" % config["model"])
+        print("  Max iterations: %d" % config["max_iterations"])
+        print("  Plan mode: %s" % args.plan)
+        print("  Prompt (%d chars):\n%s" % (len(prompt), prompt))
+        return
+
     create_task(
         task_id=task_id,
         prompt=prompt,
@@ -270,15 +279,6 @@ def cmd_start(args):
 
     if existing_branch:
         update_task(task_id, existing_branch=1)
-
-    if args.dry_run:
-        print("DRY RUN — would start task %s" % task_id)
-        print("  Branch: %s" % branch)
-        print("  Model: %s" % config["model"])
-        print("  Max iterations: %d" % config["max_iterations"])
-        print("  Plan mode: %s" % args.plan)
-        print("  Prompt (%d chars):\n%s" % (len(prompt), prompt))
-        return
 
     _launch_in_tmux(task_id, mode="review", branch=branch)
 
