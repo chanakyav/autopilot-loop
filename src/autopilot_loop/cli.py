@@ -336,6 +336,7 @@ def cmd_resume(args):
     prompt = "(resumed from PR #%d)" % args.pr
     if getattr(args, "context", None):
         prompt = "%s\n\n## Additional Instructions\n%s" % (prompt, args.context)
+        logger.info("Resume context: %d chars", len(args.context))
 
     create_task(
         task_id=task_id,
