@@ -12,6 +12,7 @@ __all__ = [
     "fix_ci_prompt",
     "format_review_for_prompt",
     "format_ci_annotations_for_prompt",
+    "update_description_prompt",
 ]
 
 
@@ -152,11 +153,12 @@ def plan_and_implement_prompt(task_description, branch_name, custom_instructions
     return "\n".join(parts)
 
 
-def fix_prompt(review_comments_text, custom_instructions="", previous_context="", prompt_file=None):
+def fix_prompt(review_comments_text, custom_instructions="", previous_context="",
+               bouncing_comments="", prompt_file=None):
     """Prompt for the FIX phase.
 
-    Agent addresses PR review comments, commits, pushes, self-reviews,
-    and writes a summary file for each comment.
+    Agent addresses PR review comments using a 3-tier verification model,
+    commits, pushes, self-reviews, and writes a summary file for each comment.
     """
     parts = []
 
@@ -174,17 +176,51 @@ def fix_prompt(review_comments_text, custom_instructions="", previous_context=""
         parts.append(previous_context.strip())
         parts.append("")
 
+    if bouncing_comments:
+        parts.append("## \u26a0\ufe0f Circular Review Loop Detected")
+        parts.append("")
+        parts.append(bouncing_comments.strip())
+        parts.append("")
+
     parts.append("## Copilot Review Feedback to Address")
     parts.append("")
     parts.append(review_comments_text.strip())
     parts.append("")
     parts.append("## Instructions")
     parts.append(
-        "1. Review each comment above. Use your judgment to decide what's worth\n"
-        "   addressing. If a comment is a valid concern, fix it. If it's not worth\n"
-        "   changing (e.g., subjective style preference, or the current code is\n"
-        "   already correct), skip it.\n"
-        "2. Make the necessary code changes.\n"
+        "CRITICAL: Do NOT blindly apply every review suggestion. Copilot Code Review\n"
+        "(CCR) can be wrong, contradictory, or subjective. You must VERIFY each claim\n"
+        "before acting. Use the 3-tier decision model below.\n"
+        "\n"
+        "### Verification steps (do these for EVERY comment before deciding)\n"
+        "\n"
+        "a. Read the surrounding code context (the full function, not just the flagged line).\n"
+        "b. Check if existing tests already cover the scenario CCR mentions.\n"
+        "c. If CCR suggests adding or removing something, verify the claim against actual\n"
+        "   usage in the codebase (grep for callers, check API contracts, read specs).\n"
+        "d. If CCR says a field should be optional/required, check the schema, callers,\n"
+        "   and any API documentation to confirm.\n"
+        "\n"
+        "### 3-tier decision model\n"
+        "\n"
+        "**Tier 1 \u2014 AGREE & FIX**: CCR is clearly correct (real bug, missing null check,\n"
+        "failing test, security issue). Fix it. Set status to `\"fixed\"`.\n"
+        "\n"
+        "**Tier 2 \u2014 DISAGREE with evidence**: CCR is wrong and you have concrete proof\n"
+        "(e.g., \"this field is required by the API contract in src/schema.py:42\",\n"
+        "\"the test at tests/test_foo.py:100 already covers this\"). Do NOT make the\n"
+        "change. Set status to `\"dismissed\"`. You MUST include an `\"evidence\"` field\n"
+        "explaining why CCR is wrong with specific file/line references.\n"
+        "\n"
+        "**Tier 3 \u2014 UNCERTAIN**: You cannot definitively prove CCR right or wrong.\n"
+        "Do NOT make the change. Set status to `\"uncertain\"`. Include an `\"evidence\"`\n"
+        "field explaining what you checked and why you are unsure. A human will review.\n"
+        "\n"
+        "### Steps\n"
+        "\n"
+        "1. For each comment, perform the verification steps above, then classify\n"
+        "   using the 3-tier model.\n"
+        "2. Make code changes ONLY for Tier 1 (fixed) comments.\n"
         "3. Run any relevant tests to verify your fixes work.\n"
         "4. Commit with a descriptive message that explains what review feedback\n"
         "   was addressed. Do NOT use generic messages like 'fix review comments'.\n"
@@ -200,17 +236,17 @@ def fix_prompt(review_comments_text, custom_instructions="", previous_context=""
         "   ```json\n"
         '   [\n'
         '     {"comment_id": <id>, "status": "fixed", "message": "brief description of fix"},\n'
-        '     {"comment_id": <id>, "status": "skipped", "message": "reason for skipping"}\n'
+        '     {"comment_id": <id>, "status": "skipped", "message": "reason for skipping"},\n'
+        '     {"comment_id": <id>, "status": "dismissed", "message": "summary",\n'
+        '      "evidence": "concrete proof with file:line refs"},\n'
+        '     {"comment_id": <id>, "status": "uncertain", "message": "summary",\n'
+        '      "evidence": "what I checked and why I am unsure"}\n'
         '   ]\n'
         "   ```\n"
         "   The comment_id values are provided in the comments above (as `[comment_id: N]`).\n"
-        "   Status must be either `fixed` or `skipped`.\n"
-        "   Do NOT commit this file — just write it to disk.\n"
-        "8. If your fixes significantly changed the implementation approach or\n"
-        "   the PR scope has evolved, update the PR title and/or description\n"
-        "   using `gh pr edit --title '...' --body '...'` to reflect the\n"
-        "   current state of the changes. Only do this if the approach actually\n"
-        "   changed — minor fixes don't need a description update.\n"
+        "   Status must be `fixed`, `skipped`, `dismissed`, or `uncertain`.\n"
+        "   The `evidence` field is REQUIRED for `dismissed` and `uncertain` statuses.\n"
+        "   Do NOT commit this file \u2014 just write it to disk.\n"
     )
 
     return "\n".join(parts)
@@ -318,5 +354,59 @@ def format_ci_annotations_for_prompt(annotations):
                 message = message[:1000] + "\n  ... (truncated)"
             parts.append(message)
         parts.append("")
+
+    return "\n".join(parts)
+
+
+def update_description_prompt(task_description, current_pr_body, diff_stat,
+                              custom_instructions="", prompt_file=None):
+    """Prompt for the UPDATE_DESCRIPTION phase.
+
+    Agent rewrites the PR description to reflect the current state of changes.
+    The output is captured and used to update the PR body via gh pr edit.
+    """
+    parts = []
+
+    file_protection = _file_protection_instruction(prompt_file)
+    if file_protection:
+        parts.append(file_protection)
+
+    if custom_instructions:
+        parts.append(custom_instructions.strip())
+        parts.append("")
+
+    parts.append("## Task")
+    parts.append("Update the PR description to accurately reflect the current state of changes.")
+    parts.append("")
+    parts.append("## Original Task Description")
+    parts.append(task_description.strip())
+    parts.append("")
+    parts.append("## Current PR Description")
+    parts.append("```")
+    parts.append(current_pr_body.strip() if current_pr_body else "(empty)")
+    parts.append("```")
+    parts.append("")
+    parts.append("## Current Diff Summary")
+    parts.append("```")
+    parts.append(diff_stat.strip() if diff_stat else "(no changes)")
+    parts.append("```")
+    parts.append("")
+    parts.append("## Instructions")
+    parts.append(
+        "1. Read the current diff by running `git diff main` to understand what\n"
+        "   the PR actually does now (not just what was originally planned).\n"
+        "2. Write an updated PR description that accurately reflects the CURRENT\n"
+        "   state of the code changes. The description should:\n"
+        "   - Summarize what changed and why\n"
+        "   - Mention key implementation decisions\n"
+        "   - Note any trade-offs or known limitations\n"
+        "3. If the repo has a PR template (check `.github/PULL_REQUEST_TEMPLATE.md`),\n"
+        "   preserve its structure and fill in the sections.\n"
+        "4. Update the PR using:\n"
+        "   `gh pr edit --body '<updated description>'`\n"
+        "   Make sure to properly escape the body content for the shell.\n"
+        "5. Do NOT make any code changes. Do NOT commit anything. Only update the\n"
+        "   PR description.\n"
+    )
 
     return "\n".join(parts)

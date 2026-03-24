@@ -2,7 +2,7 @@
 
 Orchestrator: INIT → IMPLEMENT → VERIFY_PR → REQUEST_REVIEW →
 WAIT_REVIEW → PARSE_REVIEW → FIX → VERIFY_PUSH → RESOLVE_COMMENTS →
-REQUEST_REVIEW → ... → COMPLETE.
+UPDATE_DESCRIPTION → REQUEST_REVIEW → ... → COMPLETE.
 
 CIOrchestrator: INIT → FETCH_ANNOTATIONS → FIX_CI → VERIFY_PUSH →
 WAIT_CI → FETCH_ANNOTATIONS → ... → COMPLETE.
@@ -23,6 +23,7 @@ from autopilot_loop.github_api import (
     get_failed_checks,
     get_head_sha,
     get_latest_copilot_review_thread_ts,
+    get_pr_description,
     get_unresolved_review_comments,
     is_copilot_pending_reviewer,
     reply_to_comment,
@@ -46,6 +47,7 @@ from autopilot_loop.prompts import (
     implement_on_existing_branch_prompt,
     implement_prompt,
     plan_and_implement_prompt,
+    update_description_prompt,
 )
 
 logger = logging.getLogger(__name__)
@@ -64,6 +66,7 @@ STATES = [
     "FIX",
     "VERIFY_PUSH",
     "RESOLVE_COMMENTS",
+    "UPDATE_DESCRIPTION",
     "COMPLETE",
     "FAILED",
     "STOPPED",
@@ -298,6 +301,7 @@ class Orchestrator(BaseOrchestrator):
             "FIX": self._do_fix,
             "VERIFY_PUSH": self._do_verify_push,
             "RESOLVE_COMMENTS": self._do_resolve_comments,
+            "UPDATE_DESCRIPTION": self._do_update_description,
         }
 
     def _init_next_state(self):
@@ -588,6 +592,120 @@ class Orchestrator(BaseOrchestrator):
 
         return "\n".join(lines)
 
+    def _detect_bouncing_comments(self, current_comments, current_iteration):
+        """Detect comments that keep bouncing back after being 'fixed'.
+
+        Compares current unresolved comments against previous fix summaries
+        to find comments on the same file path with similar body text that
+        were marked as 'fixed' but reappeared.
+
+        Returns a formatted string warning about bouncing comments, or
+        empty string if none detected.
+        """
+        if current_iteration < 3:
+            # Need at least 2 previous iterations to detect a bounce
+            return ""
+
+        # Load all previous fix summaries
+        previous_fixed = []  # list of (iteration, path, body_snippet)
+        for prev_iter in range(1, current_iteration):
+            summary_path = os.path.join(
+                self.sessions_dir, "fix-summary-%d.json" % prev_iter,
+            )
+            if not os.path.isfile(summary_path):
+                continue
+            try:
+                with open(summary_path, "r") as f:
+                    entries = json.load(f)
+            except (json.JSONDecodeError, OSError):
+                continue
+
+            # Also load the review data to get file paths for these comments
+            review_path = os.path.join(
+                self.sessions_dir, "review-%d.json" % prev_iter,
+            )
+            comment_map = {}
+            if os.path.isfile(review_path):
+                try:
+                    with open(review_path, "r") as f:
+                        review_data = json.load(f)
+                    for c in review_data.get("comments", []):
+                        cid = c.get("id")
+                        if cid is not None:
+                            comment_map[int(cid)] = c
+                except (json.JSONDecodeError, OSError):
+                    pass
+
+            for entry in entries:
+                if entry.get("status") != "fixed":
+                    continue
+                cid = entry.get("comment_id")
+                if cid is None:
+                    continue
+                comment_data = comment_map.get(int(cid), {})
+                path = comment_data.get("path", "")
+                body = comment_data.get("body", "")
+                # Use first 80 chars of body as a fingerprint
+                snippet = body[:80].strip().lower() if body else ""
+                previous_fixed.append((prev_iter, path, snippet))
+
+        if not previous_fixed:
+            return ""
+
+        # Check each current comment against the history
+        bouncing = []
+        for comment in current_comments:
+            c_path = comment.get("path", "")
+            c_body = (comment.get("body", "")[:80]).strip().lower()
+            if not c_path:
+                continue
+
+            bounce_count = 0
+            for _prev_iter, prev_path, prev_snippet in previous_fixed:
+                if prev_path != c_path:
+                    continue
+                # Match if body text has significant overlap
+                if not prev_snippet or not c_body:
+                    continue
+                # Simple substring match: if either contains the other's
+                # first 40 chars, consider it the same concern
+                short_prev = prev_snippet[:40]
+                short_curr = c_body[:40]
+                if short_prev in c_body or short_curr in prev_snippet:
+                    bounce_count += 1
+
+            if bounce_count >= 2:
+                bouncing.append({
+                    "path": c_path,
+                    "line": comment.get("line", "?"),
+                    "body": comment.get("body", "")[:120],
+                    "bounce_count": bounce_count,
+                    "comment_id": comment.get("id"),
+                })
+
+        if not bouncing:
+            return ""
+
+        lines = [
+            "The following comments have bounced back %d+ times after being " % 2
+            + "'fixed'. This indicates a CIRCULAR REVIEW LOOP where CCR keeps "
+            + "reversing your changes.",
+            "",
+        ]
+        for b in bouncing:
+            lines.append(
+                "- `%s` (line %s) [comment_id: %s] — bounced %d times: %s"
+                % (b["path"], b["line"], b["comment_id"], b["bounce_count"],
+                   b["body"][:80])
+            )
+        lines.append("")
+        lines.append(
+            "DO NOT fix these comments again. Mark them as `\"uncertain\"` with "
+            "evidence explaining the circular loop. A human will review and decide."
+        )
+
+        return "\n".join(lines)
+
     def _do_fix(self):
         """Run copilot agent to address review comments."""
         pr_number = self.task["pr_number"]
@@ -605,12 +723,16 @@ class Orchestrator(BaseOrchestrator):
         # Load previous iteration's fix summary for context carry-forward
         previous_context = self._load_previous_fix_summary(iteration)
 
+        # Detect circular review loops
+        bouncing_context = self._detect_bouncing_comments(unresolved, iteration)
+
         # Format for prompt
         review_text = format_review_for_prompt(review_body, unresolved)
         prompt = fix_prompt(
             review_comments_text=review_text,
             custom_instructions=self.config.get("custom_instructions", ""),
             previous_context=previous_context,
+            bouncing_comments=bouncing_context,
             prompt_file=self.task.get("prompt_file"),
         )
 
@@ -676,10 +798,27 @@ class Orchestrator(BaseOrchestrator):
             summary = summaries.get(comment_id, {})
             status = summary.get("status", "fixed")
             message = summary.get("message", "")
+            evidence = summary.get("evidence", "")
 
             # Build reply
             PREFIX = "\U0001f916 [autopilot-loop](https://github.com/chanakyav/autopilot-loop)"
-            if status == "skipped":
+            if status == "uncertain":
+                # Do NOT resolve — leave for human review
+                reply_body = "%s: \u2753 Needs human review \u2014 %s" % (PREFIX, message)
+                if evidence:
+                    reply_body += "\n\n**What was checked:** %s" % evidence
+                try:
+                    reply_to_comment(pr_number, comment_id, reply_body)
+                    logger.debug("[%s] Left comment %d unresolved (uncertain)", self.task_id, comment_id)
+                except Exception as e:
+                    logger.warning("[%s] Failed to reply to comment %d: %s", self.task_id, comment_id, e)
+                continue
+
+            if status == "dismissed":
+                reply_body = "%s: Dismissed \u2014 %s" % (PREFIX, message)
+                if evidence:
+                    reply_body += "\n\n**Evidence:** %s" % evidence
+            elif status == "skipped":
                 reply_body = (
                     "%s: Skipped \u2014 %s" % (PREFIX, message)
                     if message
@@ -701,6 +840,50 @@ class Orchestrator(BaseOrchestrator):
                 logger.warning("[%s] Failed to resolve comment %d: %s", self.task_id, comment_id, e)
 
         logger.info("[%s] \u2713 Resolved %d/%d comments", self.task_id, resolved_count, len(comments))
+        return "UPDATE_DESCRIPTION"
+
+    def _do_update_description(self):
+        """Run copilot agent to update the PR description after fixes."""
+        pr_number = self.task["pr_number"]
+        iteration = self.task["iteration"]
+
+        # Fetch current PR description
+        try:
+            pr_data = get_pr_description(pr_number)
+            current_body = pr_data.get("body", "")
+        except Exception as e:
+            logger.warning("[%s] Could not fetch PR description: %s", self.task_id, e)
+            current_body = ""
+
+        # Get diff stat for context
+        try:
+            import subprocess
+            result = subprocess.run(
+                ["git", "diff", "main", "--stat"],
+                capture_output=True, text=True, timeout=30,
+            )
+            diff_stat = result.stdout.strip()
+        except Exception:
+            diff_stat = ""
+
+        prompt = update_description_prompt(
+            task_description=self.task["prompt"],
+            current_pr_body=current_body,
+            diff_stat=diff_stat,
+            custom_instructions=self.config.get("custom_instructions", ""),
+            prompt_file=self.task.get("prompt_file"),
+        )
+
+        result = self._run_agent_with_retry(
+            "UPDATE_DESCRIPTION", prompt, "update-desc-%d" % iteration,
+        )
+        if result is None:
+            # Non-fatal: description update failure should not block the loop
+            logger.warning("[%s] Description update agent failed, continuing", self.task_id)
+        else:
+            logger.info("[%s] \u2713 PR description updated (exit %d, %.1fs)",
+                        self.task_id, result.exit_code, result.duration)
+
         return "REQUEST_REVIEW"
 
 

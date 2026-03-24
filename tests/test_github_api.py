@@ -577,3 +577,39 @@ class TestGetCheckStates:
                    return_value=_mock_run("not json")):
             result = get_check_states(42, ["check-a"])
         assert result is None
+
+
+class TestGetPrDescription:
+    def test_returns_title_and_body(self):
+        from autopilot_loop.github_api import get_pr_description
+        output = json.dumps({"title": "My PR", "body": "PR body text"})
+        with patch("autopilot_loop.github_api.subprocess.run", return_value=_mock_run(output)):
+            result = get_pr_description(42)
+        assert result["title"] == "My PR"
+        assert result["body"] == "PR body text"
+
+    def test_api_error_raises(self):
+        from autopilot_loop.github_api import GitHubAPIError, get_pr_description
+        with patch("autopilot_loop.github_api.subprocess.run",
+                   return_value=_mock_run("", returncode=1, stderr="not found")):
+            with pytest.raises(GitHubAPIError):
+                get_pr_description(999)
+
+
+class TestUpdatePrDescription:
+    def test_calls_gh_pr_edit(self):
+        from autopilot_loop.github_api import update_pr_description
+        with patch("autopilot_loop.github_api.subprocess.run", return_value=_mock_run("")) as mock_run:
+            update_pr_description(42, "new body")
+        cmd = mock_run.call_args[0][0]
+        assert "pr" in cmd
+        assert "edit" in cmd
+        assert "42" in cmd
+        assert "new body" in cmd
+
+    def test_api_error_raises(self):
+        from autopilot_loop.github_api import GitHubAPIError, update_pr_description
+        with patch("autopilot_loop.github_api.subprocess.run",
+                   return_value=_mock_run("", returncode=1, stderr="error")):
+            with pytest.raises(GitHubAPIError):
+                update_pr_description(42, "body")

@@ -295,6 +295,7 @@ class TestOrchestratorFullLoop:
         result = orch.run()
         assert result["state"] == "COMPLETE"
 
+    @patch("autopilot_loop.orchestrator.get_pr_description")
     @patch("autopilot_loop.orchestrator.set_idle_timeout")
     @patch("autopilot_loop.orchestrator.resolve_review_thread")
     @patch("autopilot_loop.orchestrator.reply_to_comment")
@@ -312,6 +313,7 @@ class TestOrchestratorFullLoop:
         mock_pending, mock_thread_ts,
         mock_request, mock_sha, mock_verify,
         mock_reply, mock_resolve, mock_timeout,
+        mock_pr_desc,
         config,
     ):
         """Full loop with one fix iteration: comments -> fix -> resolve -> re-review -> clean."""
@@ -319,6 +321,7 @@ class TestOrchestratorFullLoop:
         mock_find_pr.return_value = 42
         mock_sha.return_value = "sha1"
         mock_verify.return_value = True
+        mock_pr_desc.return_value = {"title": "test", "body": "test body"}
 
         # First pass: 1 unresolved comment. After fix+resolve: 0 unresolved.
         # WAIT_REVIEW now also polls get_unresolved, so extra entries needed.
@@ -404,7 +407,7 @@ class TestOrchestratorResolveComments:
             if os.path.exists(summary_path):
                 os.remove(summary_path)
 
-        assert result == "REQUEST_REVIEW"
+        assert result == "UPDATE_DESCRIPTION"
         assert mock_reply.call_count == 2
         assert mock_resolve.call_count == 2
 
@@ -436,7 +439,7 @@ class TestOrchestratorResolveComments:
         orch._current_comments = comments
 
         result = orch._do_resolve_comments()
-        assert result == "REQUEST_REVIEW"
+        assert result == "UPDATE_DESCRIPTION"
         assert mock_reply.call_count == 1
         assert "Addressed" in mock_reply.call_args[0][2]
         assert mock_resolve.call_count == 1
@@ -979,3 +982,337 @@ class TestIdleTimeoutRestore:
         orch._restore_idle_timeout()
 
         mock_set.assert_not_called()
+
+
+class TestResolveCommentsNewStatuses:
+    """Tests for dismissed and uncertain statuses in _do_resolve_comments."""
+
+    @patch("autopilot_loop.orchestrator.resolve_review_thread")
+    @patch("autopilot_loop.orchestrator.reply_to_comment")
+    @patch("autopilot_loop.orchestrator.get_head_sha")
+    @patch("autopilot_loop.orchestrator.get_unresolved_review_comments")
+    def test_uncertain_does_not_resolve_thread(
+        self, mock_unresolved, mock_sha, mock_reply, mock_resolve, config, tmp_path,
+    ):
+        """Uncertain status replies but does NOT resolve the thread."""
+        import json as _json
+
+        mock_sha.return_value = "abc1234"
+        comments = [
+            {"id": 30, "thread_id": "T30", "path": "c.rb", "line": 12, "body": "maybe wrong"},
+        ]
+        mock_unresolved.return_value = comments
+
+        task_id = _create_test_task()
+        persistence.update_task(task_id, pr_number=42, branch="autopilot/test1")
+        orch = Orchestrator(task_id, config)
+        orch.task = persistence.get_task(task_id)
+        orch._current_comments = comments
+
+        summary = [
+            {"comment_id": 30, "status": "uncertain", "message": "Not sure about this",
+             "evidence": "Checked tests but inconclusive"},
+        ]
+        summary_path = os.path.join(os.getcwd(), ".autopilot-fix-summary.json")
+        with open(summary_path, "w") as f:
+            _json.dump(summary, f)
+
+        try:
+            result = orch._do_resolve_comments()
+        finally:
+            if os.path.exists(summary_path):
+                os.remove(summary_path)
+
+        assert result == "UPDATE_DESCRIPTION"
+        # Reply was posted
+        assert mock_reply.call_count == 1
+        reply_body = mock_reply.call_args[0][2]
+        assert "Needs human review" in reply_body
+        assert "Checked tests but inconclusive" in reply_body
+        # Thread was NOT resolved
+        assert mock_resolve.call_count == 0
+
+    @patch("autopilot_loop.orchestrator.resolve_review_thread")
+    @patch("autopilot_loop.orchestrator.reply_to_comment")
+    @patch("autopilot_loop.orchestrator.get_head_sha")
+    @patch("autopilot_loop.orchestrator.get_unresolved_review_comments")
+    def test_dismissed_resolves_with_evidence(
+        self, mock_unresolved, mock_sha, mock_reply, mock_resolve, config, tmp_path,
+    ):
+        """Dismissed status replies with evidence and resolves the thread."""
+        import json as _json
+
+        mock_sha.return_value = "abc1234"
+        comments = [
+            {"id": 40, "thread_id": "T40", "path": "d.rb", "line": 20, "body": "make optional"},
+        ]
+        mock_unresolved.return_value = comments
+
+        task_id = _create_test_task()
+        persistence.update_task(task_id, pr_number=42, branch="autopilot/test1")
+        orch = Orchestrator(task_id, config)
+        orch.task = persistence.get_task(task_id)
+        orch._current_comments = comments
+
+        summary = [
+            {"comment_id": 40, "status": "dismissed", "message": "Field is required",
+             "evidence": "API contract at src/schema.py:42 requires this field"},
+        ]
+        summary_path = os.path.join(os.getcwd(), ".autopilot-fix-summary.json")
+        with open(summary_path, "w") as f:
+            _json.dump(summary, f)
+
+        try:
+            result = orch._do_resolve_comments()
+        finally:
+            if os.path.exists(summary_path):
+                os.remove(summary_path)
+
+        assert result == "UPDATE_DESCRIPTION"
+        assert mock_reply.call_count == 1
+        reply_body = mock_reply.call_args[0][2]
+        assert "Dismissed" in reply_body
+        assert "API contract at src/schema.py:42" in reply_body
+        # Thread WAS resolved
+        assert mock_resolve.call_count == 1
+
+    @patch("autopilot_loop.orchestrator.resolve_review_thread")
+    @patch("autopilot_loop.orchestrator.reply_to_comment")
+    @patch("autopilot_loop.orchestrator.get_head_sha")
+    @patch("autopilot_loop.orchestrator.get_unresolved_review_comments")
+    def test_mixed_statuses(
+        self, mock_unresolved, mock_sha, mock_reply, mock_resolve, config, tmp_path,
+    ):
+        """All four statuses handled correctly in one pass."""
+        import json as _json
+
+        mock_sha.return_value = "abc1234"
+        comments = [
+            {"id": 10, "thread_id": "T10", "path": "a.rb", "line": 5, "body": "fix this"},
+            {"id": 20, "thread_id": "T20", "path": "b.rb", "line": 8, "body": "style nit"},
+            {"id": 30, "thread_id": "T30", "path": "c.rb", "line": 12, "body": "maybe wrong"},
+            {"id": 40, "thread_id": "T40", "path": "d.rb", "line": 20, "body": "bad suggestion"},
+        ]
+
+        task_id = _create_test_task()
+        persistence.update_task(task_id, pr_number=42, branch="autopilot/test1")
+        orch = Orchestrator(task_id, config)
+        orch.task = persistence.get_task(task_id)
+        orch._current_comments = comments
+
+        summary = [
+            {"comment_id": 10, "status": "fixed", "message": "Added null check"},
+            {"comment_id": 20, "status": "skipped", "message": "Style is intentional"},
+            {"comment_id": 30, "status": "uncertain", "message": "Not sure",
+             "evidence": "Checked tests"},
+            {"comment_id": 40, "status": "dismissed", "message": "Wrong suggestion",
+             "evidence": "API requires this"},
+        ]
+        summary_path = os.path.join(os.getcwd(), ".autopilot-fix-summary.json")
+        with open(summary_path, "w") as f:
+            _json.dump(summary, f)
+
+        try:
+            result = orch._do_resolve_comments()
+        finally:
+            if os.path.exists(summary_path):
+                os.remove(summary_path)
+
+        assert result == "UPDATE_DESCRIPTION"
+        # 4 replies (one per comment)
+        assert mock_reply.call_count == 4
+        # 3 resolved (fixed, skipped, dismissed) — uncertain is NOT resolved
+        assert mock_resolve.call_count == 3
+
+
+class TestUpdateDescription:
+    @patch("autopilot_loop.orchestrator.get_pr_description")
+    @patch("autopilot_loop.orchestrator.run_agent")
+    def test_update_description_success(self, mock_run, mock_pr_desc, config):
+        """UPDATE_DESCRIPTION runs agent and transitions to REQUEST_REVIEW."""
+        mock_run.return_value = _mock_agent_result()
+        mock_pr_desc.return_value = {"title": "test", "body": "old body"}
+
+        task_id = _create_test_task()
+        persistence.update_task(task_id, pr_number=42, branch="autopilot/test1", iteration=1)
+        orch = Orchestrator(task_id, config)
+        orch.task = persistence.get_task(task_id)
+        result = orch._do_update_description()
+        assert result == "REQUEST_REVIEW"
+        assert mock_run.called
+
+    @patch("autopilot_loop.orchestrator.get_pr_description")
+    @patch("autopilot_loop.orchestrator.run_agent")
+    def test_update_description_failure_non_fatal(self, mock_run, mock_pr_desc, config):
+        """UPDATE_DESCRIPTION agent failure is non-fatal, still transitions to REQUEST_REVIEW."""
+        mock_run.return_value = _mock_agent_result(exit_code=1)
+        mock_pr_desc.return_value = {"title": "test", "body": "old body"}
+
+        task_id = _create_test_task()
+        persistence.update_task(task_id, pr_number=42, branch="autopilot/test1", iteration=1)
+        orch = Orchestrator(task_id, config)
+        orch.task = persistence.get_task(task_id)
+        result = orch._do_update_description()
+        assert result == "REQUEST_REVIEW"
+
+    @patch("autopilot_loop.orchestrator.get_pr_description")
+    @patch("autopilot_loop.orchestrator.run_agent")
+    def test_update_description_pr_fetch_error(self, mock_run, mock_pr_desc, config):
+        """UPDATE_DESCRIPTION handles PR description fetch error gracefully."""
+        mock_run.return_value = _mock_agent_result()
+        mock_pr_desc.side_effect = Exception("API error")
+
+        task_id = _create_test_task()
+        persistence.update_task(task_id, pr_number=42, branch="autopilot/test1", iteration=1)
+        orch = Orchestrator(task_id, config)
+        orch.task = persistence.get_task(task_id)
+        result = orch._do_update_description()
+        assert result == "REQUEST_REVIEW"
+
+
+class TestBouncingCommentDetection:
+    def _setup_orchestrator(self, config, iteration=3):
+        task_id = _create_test_task()
+        persistence.update_task(task_id, pr_number=42, branch="autopilot/test1", iteration=iteration)
+        orch = Orchestrator(task_id, config)
+        orch.task = persistence.get_task(task_id)
+        return orch
+
+    def test_no_bounce_on_first_iterations(self, config):
+        """No bouncing detected on iterations 1-2 (not enough history)."""
+        orch = self._setup_orchestrator(config, iteration=2)
+        comments = [{"id": 1, "path": "a.rb", "line": 5, "body": "fix this"}]
+        result = orch._detect_bouncing_comments(comments, 2)
+        assert result == ""
+
+    def test_bounce_detected_after_two_fixes(self, config, tmp_path):
+        """Comment bouncing back after being fixed twice is detected."""
+        import json as _json
+
+        orch = self._setup_orchestrator(config, iteration=3)
+
+        # Create fix summaries for iterations 1 and 2 — both marked "fixed"
+        for prev_iter in [1, 2]:
+            summary_path = os.path.join(orch.sessions_dir, "fix-summary-%d.json" % prev_iter)
+            _json.dump(
+                [{"comment_id": 1, "status": "fixed", "message": "fixed it"}],
+                open(summary_path, "w"),
+            )
+            review_path = os.path.join(orch.sessions_dir, "review-%d.json" % prev_iter)
+            _json.dump(
+                {"body": "", "comments": [
+                    {"id": 1, "path": "a.rb", "line": 5, "body": "make this field optional"},
+                ]},
+                open(review_path, "w"),
+            )
+
+        # Current iteration 3: same comment reappears
+        comments = [{"id": 99, "path": "a.rb", "line": 5, "body": "make this field optional please"}]
+        result = orch._detect_bouncing_comments(comments, 3)
+        assert "CIRCULAR REVIEW LOOP" in result
+        assert "a.rb" in result
+        assert "DO NOT fix" in result
+
+    def test_no_bounce_for_different_files(self, config, tmp_path):
+        """Comments on different files do not trigger bounce detection."""
+        import json as _json
+
+        orch = self._setup_orchestrator(config, iteration=3)
+
+        for prev_iter in [1, 2]:
+            summary_path = os.path.join(orch.sessions_dir, "fix-summary-%d.json" % prev_iter)
+            _json.dump(
+                [{"comment_id": 1, "status": "fixed", "message": "fixed it"}],
+                open(summary_path, "w"),
+            )
+            review_path = os.path.join(orch.sessions_dir, "review-%d.json" % prev_iter)
+            _json.dump(
+                {"body": "", "comments": [
+                    {"id": 1, "path": "a.rb", "line": 5, "body": "fix this thing"},
+                ]},
+                open(review_path, "w"),
+            )
+
+        # Current comment is on a DIFFERENT file
+        comments = [{"id": 99, "path": "b.rb", "line": 5, "body": "fix this thing"}]
+        result = orch._detect_bouncing_comments(comments, 3)
+        assert result == ""
+
+    def test_no_bounce_for_skipped_comments(self, config, tmp_path):
+        """Skipped comments (not fixed) do not count toward bounce detection."""
+        import json as _json
+
+        orch = self._setup_orchestrator(config, iteration=3)
+
+        for prev_iter in [1, 2]:
+            summary_path = os.path.join(orch.sessions_dir, "fix-summary-%d.json" % prev_iter)
+            _json.dump(
+                [{"comment_id": 1, "status": "skipped", "message": "not worth it"}],
+                open(summary_path, "w"),
+            )
+            review_path = os.path.join(orch.sessions_dir, "review-%d.json" % prev_iter)
+            _json.dump(
+                {"body": "", "comments": [
+                    {"id": 1, "path": "a.rb", "line": 5, "body": "make optional"},
+                ]},
+                open(review_path, "w"),
+            )
+
+        comments = [{"id": 99, "path": "a.rb", "line": 5, "body": "make optional"}]
+        result = orch._detect_bouncing_comments(comments, 3)
+        assert result == ""
+
+
+class TestFixPromptWithBouncing:
+    def test_bouncing_section_included(self):
+        """fix_prompt includes bouncing comments warning when provided."""
+        from autopilot_loop.prompts import fix_prompt
+        result = fix_prompt(
+            review_comments_text="some review",
+            bouncing_comments="Comment on a.rb bounced 3 times",
+        )
+        assert "Circular Review Loop Detected" in result
+        assert "Comment on a.rb bounced 3 times" in result
+
+    def test_no_bouncing_section_when_empty(self):
+        """fix_prompt omits bouncing section when empty."""
+        from autopilot_loop.prompts import fix_prompt
+        result = fix_prompt(review_comments_text="some review")
+        assert "Circular Review Loop" not in result
+
+    def test_3_tier_model_present(self):
+        """fix_prompt includes the 3-tier decision model."""
+        from autopilot_loop.prompts import fix_prompt
+        result = fix_prompt(review_comments_text="some review")
+        assert "3-tier decision model" in result
+        assert "AGREE & FIX" in result
+        assert "DISAGREE with evidence" in result
+        assert "UNCERTAIN" in result
+        assert "dismissed" in result
+        assert "uncertain" in result
+
+
+class TestUpdateDescriptionPrompt:
+    def test_includes_all_sections(self):
+        """update_description_prompt includes all required sections."""
+        from autopilot_loop.prompts import update_description_prompt
+        result = update_description_prompt(
+            task_description="Implement feature X",
+            current_pr_body="Old PR body",
+            diff_stat="file1.py | 10 +++",
+        )
+        assert "Implement feature X" in result
+        assert "Old PR body" in result
+        assert "file1.py | 10 +++" in result
+        assert "gh pr edit" in result
+        assert "Do NOT make any code changes" in result
+
+    def test_handles_empty_body(self):
+        """update_description_prompt handles empty PR body."""
+        from autopilot_loop.prompts import update_description_prompt
+        result = update_description_prompt(
+            task_description="task",
+            current_pr_body="",
+            diff_stat="",
+        )
+        assert "(empty)" in result

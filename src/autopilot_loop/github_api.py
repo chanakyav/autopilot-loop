@@ -21,6 +21,7 @@ __all__ = [
     "get_head_sha",
     "get_issue",
     "get_latest_copilot_review_thread_ts",
+    "get_pr_description",
     "get_repo_nwo",
     "get_unresolved_review_comments",
     "is_copilot_pending_reviewer",
@@ -28,6 +29,7 @@ __all__ = [
     "reply_to_comment",
     "request_copilot_review",
     "resolve_review_thread",
+    "update_pr_description",
     "verify_new_commits",
 ]
 
@@ -182,6 +184,33 @@ def get_issue(issue_number, repo=None):
         cmd.extend(["--repo", repo])
     output = _run_gh(cmd)
     return json.loads(output)
+
+
+def get_pr_description(pr_number):
+    """Fetch the current PR title and body.
+
+    Args:
+        pr_number: PR number (int).
+
+    Returns:
+        Dict with {title, body}.
+    """
+    output = _run_gh([
+        "pr", "view", str(pr_number),
+        "--json", "title,body",
+    ])
+    return json.loads(output)
+
+
+def update_pr_description(pr_number, body):
+    """Update the PR body (description).
+
+    Args:
+        pr_number: PR number (int).
+        body: New PR body text.
+    """
+    _run_gh(["pr", "edit", str(pr_number), "--body", body])
+    logger.info("Updated PR #%d description", pr_number)
 
 
 def reply_to_comment(pr_number, comment_id, body):
