@@ -8,7 +8,6 @@ import pytest
 
 from autopilot_loop import persistence
 from autopilot_loop.cli import (
-    _add_to_git_exclude,
     _check_branch_lock,
     _parse_issue_arg,
     _validate_task_id,
@@ -258,7 +257,6 @@ class TestCmdStartFollow:
         monkeypatch.setattr("autopilot_loop.cli._detect_autopilot_branch", lambda: None)
         monkeypatch.setattr("autopilot_loop.cli._check_branch_lock", lambda b: None)
         monkeypatch.setattr("autopilot_loop.cli._launch_in_tmux", lambda *a, **kw: None)
-        monkeypatch.setattr("autopilot_loop.cli._add_to_git_exclude", lambda f: None)
 
     def test_follow_calls_logs_tui(self, monkeypatch):
         """When --no-follow is absent and stdout is a TTY, logs_tui is called."""
@@ -477,7 +475,6 @@ class TestCmdStartFile:
         monkeypatch.setattr("autopilot_loop.cli._detect_autopilot_branch", lambda: None)
         monkeypatch.setattr("autopilot_loop.cli._check_branch_lock", lambda b: None)
         monkeypatch.setattr("autopilot_loop.cli._launch_in_tmux", lambda *a, **kw: None)
-        monkeypatch.setattr("autopilot_loop.cli._add_to_git_exclude", lambda f: None)
 
     def _make_args(self, **overrides):
         defaults = {
@@ -591,45 +588,3 @@ class TestCmdStartFile:
         assert calls[0] == (42, None)
 
 
-class TestAddToGitExclude:
-    """Tests for _add_to_git_exclude."""
-
-    def test_adds_path(self, tmp_path, monkeypatch):
-        """Adds file path to .git/info/exclude."""
-        git_dir = tmp_path / ".git" / "info"
-        git_dir.mkdir(parents=True)
-        exclude_file = git_dir / "exclude"
-
-        # Stub git rev-parse to return tmp_path as repo root
-        def fake_run(cmd, **kw):
-            return subprocess.CompletedProcess(
-                args=cmd, returncode=0, stdout=str(tmp_path) + "\n", stderr="",
-            )
-
-        monkeypatch.setattr(subprocess, "run", fake_run)
-
-        prompt_file = tmp_path / "my-task.txt"
-        prompt_file.write_text("task")
-
-        _add_to_git_exclude(str(prompt_file))
-
-        assert "my-task.txt" in exclude_file.read_text()
-
-    def test_idempotent(self, tmp_path, monkeypatch):
-        """Adding the same path twice only creates one entry."""
-        git_dir = tmp_path / ".git" / "info"
-        git_dir.mkdir(parents=True)
-        exclude_file = git_dir / "exclude"
-        exclude_file.write_text("my-task.txt\n")
-
-        def fake_run(cmd, **kw):
-            return subprocess.CompletedProcess(
-                args=cmd, returncode=0, stdout=str(tmp_path) + "\n", stderr="",
-            )
-
-        monkeypatch.setattr(subprocess, "run", fake_run)
-
-        _add_to_git_exclude(str(tmp_path / "my-task.txt"))
-
-        lines = [ln for ln in exclude_file.read_text().splitlines() if ln == "my-task.txt"]
-        assert len(lines) == 1

@@ -165,38 +165,6 @@ def _parse_issue_arg(value):
     sys.exit(1)
 
 
-def _add_to_git_exclude(filepath):
-    """Add a file path to .git/info/exclude (idempotent, local-only)."""
-    try:
-        result = subprocess.run(
-            ["git", "rev-parse", "--show-toplevel"],
-            capture_output=True, text=True, check=True,
-        )
-        repo_root = result.stdout.strip()
-    except (FileNotFoundError, subprocess.CalledProcessError):
-        logger.warning("Could not determine git root; skipping .git/info/exclude")
-        return
-
-    abs_path = os.path.abspath(filepath)
-    rel_path = os.path.relpath(abs_path, repo_root)
-
-    exclude_dir = os.path.join(repo_root, ".git", "info")
-    exclude_file = os.path.join(exclude_dir, "exclude")
-
-    os.makedirs(exclude_dir, exist_ok=True)
-
-    # Read existing entries
-    existing = set()
-    if os.path.isfile(exclude_file):
-        with open(exclude_file, "r") as f:
-            existing = set(f.read().splitlines())
-
-    if rel_path not in existing:
-        with open(exclude_file, "a") as f:
-            f.write(rel_path + "\n")
-        logger.info("Added %s to .git/info/exclude", rel_path)
-
-
 def cmd_start(args):
     """Start a new autopilot task."""
     config = load_config({
@@ -236,7 +204,6 @@ def cmd_start(args):
         if not prompt:
             print("Error: file is empty: %s" % prompt_file, file=sys.stderr)
             sys.exit(1)
-        _add_to_git_exclude(prompt_file)
         logger.info("Prompt source: file %s (%d chars)", prompt_file, len(prompt))
     else:
         prompt = args.prompt
