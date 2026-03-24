@@ -8,6 +8,9 @@ options:
 - ``--prompt / -p`` — inline text on the command line.
 - ``--issue / -i``  — GitHub issue number or full URL (cross-repo supported).
 - ``--file / -f``   — path to a plain-text file whose contents become the prompt.
+
+The ``resume`` command accepts an optional ``--context / -c`` flag to pass
+additional instructions to the agent (e.g. ``--context 'fix linting issues'``).
 """
 
 import argparse
@@ -330,9 +333,14 @@ def cmd_resume(args):
 
     task_id = _generate_task_id()
 
+    prompt = "(resumed from PR #%d)" % args.pr
+    if getattr(args, "context", None):
+        prompt = "%s\n\n## Additional Instructions\n%s" % (prompt, args.context)
+        logger.info("Resume context: %d chars", len(args.context))
+
     create_task(
         task_id=task_id,
-        prompt="(resumed from PR #%d)" % args.pr,
+        prompt=prompt,
         max_iterations=config["max_iterations"],
         model=config["model"],
     )
@@ -755,6 +763,8 @@ def main():
     # resume
     p_resume = subparsers.add_parser("resume", help="Resume from an existing PR")
     p_resume.add_argument("--pr", type=int, required=True, help="PR number to resume")
+    p_resume.add_argument("--context", "-c", type=str, default="",
+                          help="Additional instructions for the agent")
 
     # status
     p_status = subparsers.add_parser("status", help="Show task status")

@@ -1316,3 +1316,56 @@ class TestUpdateDescriptionPrompt:
             diff_stat="",
         )
         assert "(empty)" in result
+
+
+class TestPreCommitVerification:
+    """Tests for pre-commit quality gate instructions in prompt builders."""
+
+    def test_implement_prompt_has_pre_commit_block(self):
+        from autopilot_loop.prompts import implement_prompt
+        prompt = implement_prompt("Do X", "autopilot/abc")
+        assert "BEFORE committing" in prompt
+        assert "linter" in prompt
+
+    def test_existing_branch_prompt_has_pre_commit_block(self):
+        from autopilot_loop.prompts import implement_on_existing_branch_prompt
+        prompt = implement_on_existing_branch_prompt("Do X", "autopilot/abc")
+        assert "BEFORE committing" in prompt
+
+    def test_plan_and_implement_prompt_has_pre_commit_block(self):
+        from autopilot_loop.prompts import plan_and_implement_prompt
+        prompt = plan_and_implement_prompt("Do X", "autopilot/abc")
+        assert "BEFORE committing" in prompt
+
+    def test_fix_prompt_has_pre_commit_block(self):
+        from autopilot_loop.prompts import fix_prompt
+        prompt = fix_prompt("some comments")
+        assert "BEFORE committing" in prompt
+
+    def test_fix_ci_prompt_has_pre_commit_block(self):
+        from autopilot_loop.prompts import fix_ci_prompt
+        prompt = fix_ci_prompt("ci failures")
+        assert "BEFORE committing" in prompt
+
+
+class TestFixPromptTaskContext:
+    """Tests for task_context parameter in fix_prompt."""
+
+    def test_task_context_included(self):
+        from autopilot_loop.prompts import fix_prompt
+        prompt = fix_prompt(
+            review_comments_text="some comments",
+            task_context="Fix all linting issues before committing",
+        )
+        assert "## Task Context" in prompt
+        assert "Fix all linting issues" in prompt
+
+    def test_task_context_omitted_when_empty(self):
+        from autopilot_loop.prompts import fix_prompt
+        prompt = fix_prompt(review_comments_text="some comments")
+        assert "## Task Context" not in prompt
+
+    def test_task_context_omitted_when_blank(self):
+        from autopilot_loop.prompts import fix_prompt
+        prompt = fix_prompt(review_comments_text="comments", task_context="")
+        assert "## Task Context" not in prompt
