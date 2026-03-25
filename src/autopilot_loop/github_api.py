@@ -8,6 +8,7 @@ import json
 import logging
 import re
 import subprocess
+import time
 
 logger = logging.getLogger(__name__)
 
@@ -39,8 +40,33 @@ class GitHubAPIError(Exception):
     pass
 
 
+_TRANSIENT_PATTERNS = [
+    "rate limit",
+    "abuse detection",
+    "server error",
+    "502",
+    "503",
+    "504",
+    "timed out",
+    "connection refused",
+    "connection reset",
+    "network is unreachable",
+]
+
+_MAX_RETRIES = 3
+
+
+def _is_transient(stderr):
+    """Check if a gh CLI error looks transient (retryable)."""
+    lower = stderr.lower()
+    return any(p in lower for p in _TRANSIENT_PATTERNS)
+
+
 def _run_gh(args, check=True):
     """Run a gh CLI command and return stdout.
+
+    Retries up to _MAX_RETRIES times with exponential backoff for
+    transient errors (rate limits, 5xx, network issues).
 
     Args:
         args: Command arguments as a list (without 'gh' prefix).
@@ -51,13 +77,35 @@ def _run_gh(args, check=True):
     """
     cmd = ["gh"] + args
     logger.debug("Running: %s", " ".join(cmd))
-    result = subprocess.run(cmd, capture_output=True, text=True)
-    if check and result.returncode != 0:
+
+    last_result = None
+    for attempt in range(_MAX_RETRIES + 1):
+        result = subprocess.run(cmd, capture_output=True, text=True)
+        last_result = result
+
+        if result.returncode == 0:
+            return result.stdout.strip()
+
+        # Only retry on transient errors
+        if attempt < _MAX_RETRIES and _is_transient(result.stderr):
+            delay = 2 ** attempt  # 1s, 2s, 4s
+            logger.warning(
+                "gh command failed (attempt %d/%d), retrying in %ds: %s",
+                attempt + 1, _MAX_RETRIES + 1, delay,
+                result.stderr.strip()[:200],
+            )
+            time.sleep(delay)
+            continue
+
+        break
+
+    if check and last_result.returncode != 0:
         raise GitHubAPIError(
             "gh command failed (exit %d): %s\nstderr: %s"
-            % (result.returncode, " ".join(cmd), result.stderr.strip())
+            % (last_result.returncode, " ".join(cmd),
+               last_result.stderr.strip())
         )
-    return result.stdout.strip()
+    return last_result.stdout.strip()
 
 
 _nwo_cache = None
@@ -313,9 +361,12 @@ def get_unresolved_review_comments(pr_number):
     # Check for GraphQL errors
     if "errors" in data:
         msgs = [e.get("message", str(e)) for e in data["errors"]]
-        logger.warning("GraphQL errors in get_unresolved_review_comments: %s", "; ".join(msgs))
+        msg = "; ".join(msgs)
         if not data.get("data"):
-            return []
+            raise GitHubAPIError(
+                "GraphQL error in get_unresolved_review_comments: %s" % msg
+            )
+        logger.warning("GraphQL partial errors in get_unresolved_review_comments: %s", msg)
 
     threads = (
         data.get("data", {})
@@ -428,9 +479,12 @@ def get_latest_copilot_review_thread_ts(pr_number):
 
     if "errors" in data:
         msgs = [e.get("message", str(e)) for e in data["errors"]]
-        logger.warning("GraphQL errors in get_latest_copilot_review_thread_ts: %s", "; ".join(msgs))
+        msg = "; ".join(msgs)
         if not data.get("data"):
-            return None
+            raise GitHubAPIError(
+                "GraphQL error in get_latest_copilot_review_thread_ts: %s" % msg
+            )
+        logger.warning("GraphQL partial errors in get_latest_copilot_review_thread_ts: %s", msg)
 
     threads = (
         data.get("data", {})

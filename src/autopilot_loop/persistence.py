@@ -38,7 +38,7 @@ DB_PATH = os.path.join(DB_DIR, "state.db")
 
 # Bump this when the schema changes. Additive changes (new nullable columns)
 # are handled by _migrate(). Breaking changes trigger a DB recreate.
-SCHEMA_VERSION = 7
+SCHEMA_VERSION = 8
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS schema_meta (
@@ -65,6 +65,7 @@ CREATE TABLE IF NOT EXISTS tasks (
     original_idle_timeout INTEGER,
     prompt_file TEXT,
     pre_fix_sha TEXT,
+    retry_counts_json TEXT,
     created_at REAL NOT NULL,
     updated_at REAL NOT NULL
 );
@@ -101,6 +102,7 @@ _MIGRATIONS = [
     (5, "tasks", "original_idle_timeout", "INTEGER"),
     (6, "tasks", "prompt_file", "TEXT"),
     (7, "tasks", "pre_fix_sha", "TEXT"),
+    (8, "tasks", "retry_counts_json", "TEXT"),
 ]
 
 
@@ -204,7 +206,8 @@ _TASK_COLUMNS = frozenset({
     "prompt", "state", "pr_number", "branch", "iteration",
     "max_iterations", "plan_mode", "dry_run", "model", "last_review_id",
     "task_mode", "ci_check_names", "pre_stop_state", "existing_branch",
-    "original_idle_timeout", "prompt_file", "pre_fix_sha", "updated_at",
+    "original_idle_timeout", "prompt_file", "pre_fix_sha",
+    "retry_counts_json", "updated_at",
 })
 
 

@@ -627,3 +627,141 @@ class TestUpdatePrDescription:
                    return_value=_mock_run("", returncode=1, stderr="error")):
             with pytest.raises(GitHubAPIError):
                 update_pr_description(42, "body")
+
+
+class TestRunGhRetry:
+    """Tests for _run_gh retry logic on transient errors."""
+
+    def test_retries_on_rate_limit(self):
+        from autopilot_loop.github_api import _run_gh
+        calls = []
+
+        def fake_run(cmd, **kw):
+            calls.append(cmd)
+            if len(calls) < 3:
+                return _mock_run("", returncode=1, stderr="API rate limit exceeded")
+            return _mock_run("success")
+
+        with patch("autopilot_loop.github_api.subprocess.run", side_effect=fake_run):
+            with patch("autopilot_loop.github_api.time.sleep"):
+                result = _run_gh(["api", "test"])
+
+        assert result == "success"
+        assert len(calls) == 3
+
+    def test_no_retry_on_permanent_error(self):
+        from autopilot_loop.github_api import GitHubAPIError, _run_gh
+        calls = []
+
+        def fake_run(cmd, **kw):
+            calls.append(cmd)
+            return _mock_run("", returncode=1, stderr="Not Found (HTTP 404)")
+
+        with patch("autopilot_loop.github_api.subprocess.run", side_effect=fake_run):
+            with pytest.raises(GitHubAPIError):
+                _run_gh(["api", "test"])
+
+        assert len(calls) == 1
+
+    def test_retries_on_server_error(self):
+        from autopilot_loop.github_api import _run_gh
+        calls = []
+
+        def fake_run(cmd, **kw):
+            calls.append(cmd)
+            if len(calls) < 2:
+                return _mock_run("", returncode=1, stderr="502 Bad Gateway")
+            return _mock_run("ok")
+
+        with patch("autopilot_loop.github_api.subprocess.run", side_effect=fake_run):
+            with patch("autopilot_loop.github_api.time.sleep"):
+                result = _run_gh(["api", "test"])
+
+        assert result == "ok"
+        assert len(calls) == 2
+
+    def test_gives_up_after_max_retries(self):
+        from autopilot_loop.github_api import GitHubAPIError, _run_gh
+
+        def fake_run(cmd, **kw):
+            return _mock_run("", returncode=1, stderr="503 Service Unavailable")
+
+        with patch("autopilot_loop.github_api.subprocess.run", side_effect=fake_run):
+            with patch("autopilot_loop.github_api.time.sleep"):
+                with pytest.raises(GitHubAPIError):
+                    _run_gh(["api", "test"])
+
+    def test_check_false_no_raise(self):
+        from autopilot_loop.github_api import _run_gh
+
+        def fake_run(cmd, **kw):
+            return _mock_run("", returncode=1, stderr="Not Found")
+
+        with patch("autopilot_loop.github_api.subprocess.run", side_effect=fake_run):
+            result = _run_gh(["api", "test"], check=False)
+
+        assert result == ""
+
+
+class TestGraphQLErrorRaising:
+    """Tests for GraphQL error raising in review comment functions."""
+
+    def test_unresolved_comments_raises_on_graphql_error_no_data(self):
+        from autopilot_loop.github_api import GitHubAPIError
+        error_response = {"errors": [{"message": "auth required"}]}
+        with patch("autopilot_loop.github_api._run_gh") as mock_gh:
+            mock_gh.side_effect = [
+                "octocat/hello-world",
+                json.dumps(error_response),
+            ]
+            with pytest.raises(GitHubAPIError, match="auth required"):
+                get_unresolved_review_comments(42)
+
+    def test_unresolved_comments_partial_error_returns_data(self):
+        partial_response = {
+            "errors": [{"message": "some warning"}],
+            "data": {
+                "repository": {
+                    "pullRequest": {
+                        "reviewThreads": {"nodes": []}
+                    }
+                }
+            },
+        }
+        with patch("autopilot_loop.github_api._run_gh") as mock_gh:
+            mock_gh.side_effect = [
+                "octocat/hello-world",
+                json.dumps(partial_response),
+            ]
+            result = get_unresolved_review_comments(42)
+            assert result == []
+
+    def test_latest_thread_ts_raises_on_graphql_error_no_data(self):
+        from autopilot_loop.github_api import GitHubAPIError
+        error_response = {"errors": [{"message": "rate limited"}]}
+        with patch("autopilot_loop.github_api._run_gh") as mock_gh:
+            mock_gh.side_effect = [
+                "octocat/hello-world",
+                json.dumps(error_response),
+            ]
+            with pytest.raises(GitHubAPIError, match="rate limited"):
+                get_latest_copilot_review_thread_ts(42)
+
+    def test_latest_thread_ts_partial_error_returns_data(self):
+        partial_response = {
+            "errors": [{"message": "some warning"}],
+            "data": {
+                "repository": {
+                    "pullRequest": {
+                        "reviewThreads": {"nodes": []}
+                    }
+                }
+            },
+        }
+        with patch("autopilot_loop.github_api._run_gh") as mock_gh:
+            mock_gh.side_effect = [
+                "octocat/hello-world",
+                json.dumps(partial_response),
+            ]
+            result = get_latest_copilot_review_thread_ts(42)
+            assert result is None
