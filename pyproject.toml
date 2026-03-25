@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "autopilot-loop"
-version = "0.2.1"
+version = "0.3.0"
 description = "Headless orchestrator that automates the Copilot coding-review-fix cycle"
 readme = "README.md"
 license = {file = "LICENSE"}
@@ -15,7 +15,7 @@ dependencies = [
 authors = [
     { name = "Chanakya Valluri" },
 ]
-keywords = ["copilot", "automation", "code-review", "github", "codespaces", "cli", "local"]
+keywords = ["copilot", "automation", "code-review", "github", "codespaces"]
 classifiers = [
     "Development Status :: 3 - Alpha",
     "Intended Audience :: Developers",
