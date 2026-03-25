@@ -83,7 +83,12 @@ class BaseOrchestrator:
         self.config = config
         self.task = get_task(task_id)
         self.sessions_dir = get_sessions_dir(task_id)
-        self._retry_counts = {}  # phase -> retry count
+        # Restore retry counts from DB (survives crash/resume)
+        raw = self.task.get("retry_counts_json") or "{}"
+        try:
+            self._retry_counts = json.loads(raw)
+        except (ValueError, TypeError):
+            self._retry_counts = {}
 
     def _get_handlers(self):
         """Return a dict mapping state names to handler methods. Subclasses must override."""
@@ -273,6 +278,7 @@ class BaseOrchestrator:
 
         logger.warning("[%s] No new commits on %s, retrying fix", self.task_id, branch)
         self._retry_counts[retry_key] = 1
+        update_task(self.task_id, retry_counts_json=json.dumps(self._retry_counts))
         return self._retry_fix_state()
 
     def _after_verify_push(self):
@@ -378,6 +384,7 @@ class Orchestrator(BaseOrchestrator):
 
         logger.warning("[%s] No PR found for branch %s, retrying IMPLEMENT with explicit prompt", self.task_id, branch)
         self._retry_counts[retry_key] = 1
+        update_task(self.task_id, retry_counts_json=json.dumps(self._retry_counts))
 
         # Retry with a more explicit prompt
         explicit_prompt = (

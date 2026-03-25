@@ -220,6 +220,7 @@ def test_migration_from_pre_versioned_db(tmp_path, monkeypatch):
     assert task["original_idle_timeout"] is None
     assert task["prompt_file"] is None
     assert task["pre_fix_sha"] is None
+    assert task["retry_counts_json"] is None
 
     # New columns should be usable
     persistence.update_task("old1", task_mode="ci", ci_check_names='["check-a"]')
@@ -268,3 +269,18 @@ def test_pre_fix_sha_persists(tmp_path, monkeypatch):
     persistence.update_task("t1", pre_fix_sha="abc123def456")
     task = persistence.get_task("t1")
     assert task["pre_fix_sha"] == "abc123def456"
+
+
+def test_retry_counts_json_persists(tmp_path, monkeypatch):
+    """retry_counts_json column can be written and read back."""
+    monkeypatch.setattr(persistence, "DB_DIR", str(tmp_path))
+    monkeypatch.setattr(persistence, "DB_PATH", str(tmp_path / "state.db"))
+
+    persistence.create_task("t1", "prompt")
+    task = persistence.get_task("t1")
+    assert task["retry_counts_json"] is None
+
+    counts = '{"VERIFY_PUSH_FIX_RETRY": 1}'
+    persistence.update_task("t1", retry_counts_json=counts)
+    task = persistence.get_task("t1")
+    assert task["retry_counts_json"] == counts
