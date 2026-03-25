@@ -29,6 +29,7 @@ DEFAULTS = {
     "ci_check_names": [],
     "ci_poll_interval_seconds": 120,
     "ci_poll_timeout_seconds": 5400,
+    "max_output_bytes": 52428800,
 }
 
 CONFIG_FILENAMES = [
@@ -53,7 +54,12 @@ def load_config(cli_overrides=None):
         if os.path.isfile(path):
             logger.info("Loading config from %s", path)
             with open(path, "r") as f:
-                file_config = json.load(f)
+                try:
+                    file_config = json.load(f)
+                except json.JSONDecodeError as exc:
+                    raise ValueError(
+                        "Invalid JSON in config file %s: %s" % (path, exc)
+                    )
             config.update(file_config)
             break
     else:
@@ -83,3 +89,5 @@ def _validate(config):
         raise ValueError("agent_timeout_seconds must be >= 60, got %d" % config["agent_timeout_seconds"])
     if "{task_id}" not in config["branch_pattern"]:
         raise ValueError("branch_pattern must contain {task_id}, got '%s'" % config["branch_pattern"])
+    if config["max_output_bytes"] < 1048576:
+        raise ValueError("max_output_bytes must be >= 1048576 (1 MB), got %d" % config["max_output_bytes"])

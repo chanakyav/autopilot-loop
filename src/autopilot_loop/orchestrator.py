@@ -213,6 +213,7 @@ class BaseOrchestrator:
                 model=self.config.get("model", "claude-opus-4.6"),
                 timeout=self.config.get("agent_timeout_seconds", 1800),
                 extra_flags=self._get_extra_flags(),
+                max_output_bytes=self.config.get("max_output_bytes", 0),
             )
             ended_at = time.time()
 
@@ -252,7 +253,7 @@ class BaseOrchestrator:
     def _do_verify_push(self):
         """Verify new commits were pushed after fix."""
         branch = self.task["branch"]
-        pre_sha = getattr(self, "_pre_fix_sha", None)
+        pre_sha = self.task.get("pre_fix_sha") or getattr(self, "_pre_fix_sha", None)
 
         if pre_sha and verify_new_commits(branch, pre_sha):
             logger.info("[%s] \u2713 New commits found on %s", self.task_id, branch)
@@ -737,8 +738,9 @@ class Orchestrator(BaseOrchestrator):
             task_context=self.task.get("prompt", ""),
         )
 
-        # Record head SHA before fix
+        # Record head SHA before fix — persisted for crash recovery
         self._pre_fix_sha = get_head_sha(self.task["branch"])
+        update_task(self.task_id, pre_fix_sha=self._pre_fix_sha)
 
         result = self._run_agent_with_retry("FIX", prompt, "fix-%d" % iteration)
         if result is None:
@@ -1003,6 +1005,7 @@ class CIOrchestrator(BaseOrchestrator):
         )
 
         self._pre_fix_sha = get_head_sha(self.task["branch"])
+        update_task(self.task_id, pre_fix_sha=self._pre_fix_sha)
 
         result = self._run_agent_with_retry("FIX_CI", prompt, "fix-ci-%d" % iteration)
         if result is None:

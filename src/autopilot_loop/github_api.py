@@ -183,7 +183,12 @@ def get_issue(issue_number, repo=None):
     if repo:
         cmd.extend(["--repo", repo])
     output = _run_gh(cmd)
-    return json.loads(output)
+    try:
+        return json.loads(output)
+    except json.JSONDecodeError as exc:
+        raise GitHubAPIError(
+            "Failed to parse issue response: %s" % exc
+        )
 
 
 def get_pr_description(pr_number):
@@ -199,7 +204,12 @@ def get_pr_description(pr_number):
         "pr", "view", str(pr_number),
         "--json", "title,body",
     ])
-    return json.loads(output)
+    try:
+        return json.loads(output)
+    except json.JSONDecodeError as exc:
+        raise GitHubAPIError(
+            "Failed to parse PR description response: %s" % exc
+        )
 
 
 def update_pr_description(pr_number, body):

@@ -391,6 +391,13 @@ class TestGetIssue:
             result = get_issue(123)
             assert result["title"] == "Bug in X"
 
+    def test_invalid_json_raises_api_error(self):
+        from autopilot_loop.github_api import GitHubAPIError
+        with patch("autopilot_loop.github_api.subprocess.run",
+                   return_value=_mock_run("not valid json")):
+            with pytest.raises(GitHubAPIError, match="Failed to parse issue"):
+                get_issue(123)
+
 
 class TestVerifyNewCommits:
     @patch("autopilot_loop.github_api.get_head_sha")
@@ -594,6 +601,13 @@ class TestGetPrDescription:
                    return_value=_mock_run("", returncode=1, stderr="not found")):
             with pytest.raises(GitHubAPIError):
                 get_pr_description(999)
+
+    def test_invalid_json_raises_api_error(self):
+        from autopilot_loop.github_api import GitHubAPIError, get_pr_description
+        with patch("autopilot_loop.github_api.subprocess.run",
+                   return_value=_mock_run("bad json data")):
+            with pytest.raises(GitHubAPIError, match="Failed to parse PR description"):
+                get_pr_description(42)
 
 
 class TestUpdatePrDescription:

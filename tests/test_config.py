@@ -95,3 +95,28 @@ def test_validation_agent_timeout():
 def test_validation_branch_pattern():
     with pytest.raises(ValueError, match="branch_pattern"):
         load_config({"branch_pattern": "no-task-id-placeholder"})
+
+
+def test_validation_max_output_bytes():
+    with pytest.raises(ValueError, match="max_output_bytes"):
+        load_config({"max_output_bytes": 100})
+
+
+def test_max_output_bytes_default():
+    config = load_config()
+    assert config["max_output_bytes"] == 52428800
+
+
+def test_malformed_json_config_file(tmp_path, monkeypatch):
+    """Malformed JSON config file raises ValueError with useful message."""
+    config_file = tmp_path / "autopilot.json"
+    config_file.write_text("{invalid json!!!")
+
+    import autopilot_loop.config as config_module
+    original = config_module.CONFIG_FILENAMES
+    config_module.CONFIG_FILENAMES = [str(config_file)]
+    try:
+        with pytest.raises(ValueError, match="Invalid JSON"):
+            load_config()
+    finally:
+        config_module.CONFIG_FILENAMES = original

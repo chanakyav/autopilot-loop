@@ -188,9 +188,13 @@ def cmd_start(args):
         sys.exit(1)
 
     if args.issue:
-        from autopilot_loop.github_api import get_issue
+        from autopilot_loop.github_api import GitHubAPIError, get_issue
         issue_number, repo = _parse_issue_arg(args.issue)
-        issue = get_issue(issue_number, repo=repo)
+        try:
+            issue = get_issue(issue_number, repo=repo)
+        except GitHubAPIError as exc:
+            print("Error: could not fetch issue: %s" % exc, file=sys.stderr)
+            sys.exit(1)
         if repo:
             prompt = "Issue %s#%d: %s\n\n%s" % (repo, issue_number, issue["title"], issue["body"][:4000])
         else:
@@ -202,8 +206,13 @@ def cmd_start(args):
         if not os.path.isfile(prompt_file):
             print("Error: file not found: %s" % prompt_file, file=sys.stderr)
             sys.exit(1)
-        with open(prompt_file, "r") as f:
-            prompt = f.read().strip()
+        try:
+            with open(prompt_file, "r") as f:
+                prompt = f.read().strip()
+        except (PermissionError, OSError) as exc:
+            print("Error: could not read file %s: %s" % (prompt_file, exc),
+                  file=sys.stderr)
+            sys.exit(1)
         if not prompt:
             print("Error: file is empty: %s" % prompt_file, file=sys.stderr)
             sys.exit(1)

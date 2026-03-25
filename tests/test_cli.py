@@ -663,4 +663,45 @@ class TestCmdStartFile:
         assert len(calls) == 1
         assert calls[0] == (42, None)
 
+    def test_issue_fetch_failure_exits(self, monkeypatch, capsys):
+        """--issue that fails to fetch prints error and exits 1."""
+        self._stub_start_deps(monkeypatch)
+
+        from autopilot_loop.github_api import GitHubAPIError
+
+        def fake_get_issue(num, repo=None):
+            raise GitHubAPIError("gh command failed (exit 1)")
+
+        monkeypatch.setattr("autopilot_loop.github_api.get_issue", fake_get_issue)
+
+        with pytest.raises(SystemExit) as exc_info:
+            cmd_start(self._make_args(issue="42"))
+
+        assert exc_info.value.code == 1
+        captured = capsys.readouterr()
+        assert "could not fetch issue" in captured.err
+
+    def test_file_permission_error_exits(self, monkeypatch, capsys):
+        """--file with unreadable file prints error and exits 1."""
+        self._stub_start_deps(monkeypatch)
+
+        import builtins
+        real_open = builtins.open
+
+        def fake_open(path, *a, **kw):
+            if "unreadable" in str(path):
+                raise PermissionError("Permission denied: %s" % path)
+            return real_open(path, *a, **kw)
+
+        monkeypatch.setattr(builtins, "open", fake_open)
+        # os.path.isfile must return True for the file
+        monkeypatch.setattr("os.path.isfile", lambda p: True)
+
+        with pytest.raises(SystemExit) as exc_info:
+            cmd_start(self._make_args(prompt=None, file="/tmp/unreadable.txt"))
+
+        assert exc_info.value.code == 1
+        captured = capsys.readouterr()
+        assert "could not read file" in captured.err
+
 

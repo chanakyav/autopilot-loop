@@ -35,12 +35,20 @@ class AgentResult:
         return self.exit_code == 0
 
 
-def _stream_and_capture(pipe, echo_to, captured):
+def _stream_and_capture(pipe, echo_to, captured, max_bytes=0):
     """Read from pipe line-by-line, echo to a stream, and capture all output."""
+    truncated = False
     try:
         for line in iter(pipe.readline, b""):
             decoded = line.decode("utf-8", errors="replace")
-            captured.write(decoded)
+            if max_bytes > 0 and captured.tell() >= max_bytes:
+                if not truncated:
+                    captured.write(
+                        "\n[OUTPUT TRUNCATED at %d bytes]\n" % max_bytes
+                    )
+                    truncated = True
+            else:
+                captured.write(decoded)
             if echo_to:
                 echo_to.write(decoded)
                 echo_to.flush()
@@ -48,7 +56,8 @@ def _stream_and_capture(pipe, echo_to, captured):
         pipe.close()
 
 
-def run_agent(prompt, session_dir, model="claude-opus-4.6", timeout=1800, extra_flags=None):
+def run_agent(prompt, session_dir, model="claude-opus-4.6", timeout=1800,
+              extra_flags=None, max_output_bytes=0):
     """Run copilot CLI in non-interactive mode.
 
     Streams stdout to the terminal in real-time so you can see progress
@@ -60,6 +69,7 @@ def run_agent(prompt, session_dir, model="claude-opus-4.6", timeout=1800, extra_
         model: Model name for --model flag.
         timeout: Timeout in seconds (SIGTERM, then SIGKILL after 30s grace).
         extra_flags: Additional CLI flags as a list of strings.
+        max_output_bytes: Max bytes to capture in memory (0 = unlimited).
 
     Returns:
         AgentResult with exit code, session file path, stdout, stderr, duration.
@@ -109,12 +119,12 @@ def run_agent(prompt, session_dir, model="claude-opus-4.6", timeout=1800, extra_
 
     stdout_thread = threading.Thread(
         target=_stream_and_capture,
-        args=(proc.stdout, sys.stdout, stdout_captured),
+        args=(proc.stdout, sys.stdout, stdout_captured, max_output_bytes),
         daemon=True,
     )
     stderr_thread = threading.Thread(
         target=_stream_and_capture,
-        args=(proc.stderr, None, stderr_captured),
+        args=(proc.stderr, None, stderr_captured, max_output_bytes),
         daemon=True,
     )
     stdout_thread.start()
