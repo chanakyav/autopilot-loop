@@ -1178,37 +1178,36 @@ class TestBouncingCommentDetection:
         orch.task = persistence.get_task(task_id)
         return orch
 
-    def test_no_bounce_on_first_iterations(self, config):
-        """No bouncing detected on iterations 1-2 (not enough history)."""
-        orch = self._setup_orchestrator(config, iteration=2)
+    def test_no_bounce_on_first_iteration(self, config):
+        """No bouncing detected on iteration 1 (no history yet)."""
+        orch = self._setup_orchestrator(config, iteration=1)
         comments = [{"id": 1, "path": "a.rb", "line": 5, "body": "fix this"}]
-        result = orch._detect_bouncing_comments(comments, 2)
+        result = orch._detect_bouncing_comments(comments, 1)
         assert result == ""
 
-    def test_bounce_detected_after_two_fixes(self, config, tmp_path):
-        """Comment bouncing back after being fixed twice is detected."""
+    def test_bounce_detected_after_one_fix(self, config, tmp_path):
+        """Comment bouncing back after being fixed once is detected."""
         import json as _json
 
-        orch = self._setup_orchestrator(config, iteration=3)
+        orch = self._setup_orchestrator(config, iteration=2)
 
-        # Create fix summaries for iterations 1 and 2 — both marked "fixed"
-        for prev_iter in [1, 2]:
-            summary_path = os.path.join(orch.sessions_dir, "fix-summary-%d.json" % prev_iter)
-            _json.dump(
-                [{"comment_id": 1, "status": "fixed", "message": "fixed it"}],
-                open(summary_path, "w"),
-            )
-            review_path = os.path.join(orch.sessions_dir, "review-%d.json" % prev_iter)
-            _json.dump(
-                {"body": "", "comments": [
-                    {"id": 1, "path": "a.rb", "line": 5, "body": "make this field optional"},
-                ]},
-                open(review_path, "w"),
-            )
+        # Create fix summary for iteration 1 — marked "fixed"
+        summary_path = os.path.join(orch.sessions_dir, "fix-summary-1.json")
+        _json.dump(
+            [{"comment_id": 1, "status": "fixed", "message": "fixed it"}],
+            open(summary_path, "w"),
+        )
+        review_path = os.path.join(orch.sessions_dir, "review-1.json")
+        _json.dump(
+            {"body": "", "comments": [
+                {"id": 1, "path": "a.rb", "line": 5, "body": "make this field optional"},
+            ]},
+            open(review_path, "w"),
+        )
 
-        # Current iteration 3: same comment reappears
+        # Current iteration 2: same comment reappears
         comments = [{"id": 99, "path": "a.rb", "line": 5, "body": "make this field optional please"}]
-        result = orch._detect_bouncing_comments(comments, 3)
+        result = orch._detect_bouncing_comments(comments, 2)
         assert "CIRCULAR REVIEW LOOP" in result
         assert "a.rb" in result
         assert "DO NOT fix" in result
@@ -1217,49 +1216,47 @@ class TestBouncingCommentDetection:
         """Comments on different files do not trigger bounce detection."""
         import json as _json
 
-        orch = self._setup_orchestrator(config, iteration=3)
+        orch = self._setup_orchestrator(config, iteration=2)
 
-        for prev_iter in [1, 2]:
-            summary_path = os.path.join(orch.sessions_dir, "fix-summary-%d.json" % prev_iter)
-            _json.dump(
-                [{"comment_id": 1, "status": "fixed", "message": "fixed it"}],
-                open(summary_path, "w"),
-            )
-            review_path = os.path.join(orch.sessions_dir, "review-%d.json" % prev_iter)
-            _json.dump(
-                {"body": "", "comments": [
-                    {"id": 1, "path": "a.rb", "line": 5, "body": "fix this thing"},
-                ]},
-                open(review_path, "w"),
-            )
+        summary_path = os.path.join(orch.sessions_dir, "fix-summary-1.json")
+        _json.dump(
+            [{"comment_id": 1, "status": "fixed", "message": "fixed it"}],
+            open(summary_path, "w"),
+        )
+        review_path = os.path.join(orch.sessions_dir, "review-1.json")
+        _json.dump(
+            {"body": "", "comments": [
+                {"id": 1, "path": "a.rb", "line": 5, "body": "fix this thing"},
+            ]},
+            open(review_path, "w"),
+        )
 
         # Current comment is on a DIFFERENT file
         comments = [{"id": 99, "path": "b.rb", "line": 5, "body": "fix this thing"}]
-        result = orch._detect_bouncing_comments(comments, 3)
+        result = orch._detect_bouncing_comments(comments, 2)
         assert result == ""
 
     def test_no_bounce_for_skipped_comments(self, config, tmp_path):
         """Skipped comments (not fixed) do not count toward bounce detection."""
         import json as _json
 
-        orch = self._setup_orchestrator(config, iteration=3)
+        orch = self._setup_orchestrator(config, iteration=2)
 
-        for prev_iter in [1, 2]:
-            summary_path = os.path.join(orch.sessions_dir, "fix-summary-%d.json" % prev_iter)
-            _json.dump(
-                [{"comment_id": 1, "status": "skipped", "message": "not worth it"}],
-                open(summary_path, "w"),
-            )
-            review_path = os.path.join(orch.sessions_dir, "review-%d.json" % prev_iter)
-            _json.dump(
-                {"body": "", "comments": [
-                    {"id": 1, "path": "a.rb", "line": 5, "body": "make optional"},
-                ]},
-                open(review_path, "w"),
-            )
+        summary_path = os.path.join(orch.sessions_dir, "fix-summary-1.json")
+        _json.dump(
+            [{"comment_id": 1, "status": "skipped", "message": "not worth it"}],
+            open(summary_path, "w"),
+        )
+        review_path = os.path.join(orch.sessions_dir, "review-1.json")
+        _json.dump(
+            {"body": "", "comments": [
+                {"id": 1, "path": "a.rb", "line": 5, "body": "make optional"},
+            ]},
+            open(review_path, "w"),
+        )
 
         comments = [{"id": 99, "path": "a.rb", "line": 5, "body": "make optional"}]
-        result = orch._detect_bouncing_comments(comments, 3)
+        result = orch._detect_bouncing_comments(comments, 2)
         assert result == ""
 
 

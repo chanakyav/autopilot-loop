@@ -602,8 +602,8 @@ class Orchestrator(BaseOrchestrator):
         Returns a formatted string warning about bouncing comments, or
         empty string if none detected.
         """
-        if current_iteration < 3:
-            # Need at least 2 previous iterations to detect a bounce
+        if current_iteration < 2:
+            # Need at least 1 previous iteration to detect a bounce
             return ""
 
         # Load all previous fix summaries
@@ -674,7 +674,7 @@ class Orchestrator(BaseOrchestrator):
                 if short_prev in c_body or short_curr in prev_snippet:
                     bounce_count += 1
 
-            if bounce_count >= 2:
+            if bounce_count >= 1:
                 bouncing.append({
                     "path": c_path,
                     "line": comment.get("line", "?"),
@@ -687,7 +687,7 @@ class Orchestrator(BaseOrchestrator):
             return ""
 
         lines = [
-            "The following comments have bounced back %d+ times after being " % 2
+            "The following comments have bounced back after being "
             + "'fixed'. This indicates a CIRCULAR REVIEW LOOP where CCR keeps "
             + "reversing your changes.",
             "",
